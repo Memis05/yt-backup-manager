@@ -1,0 +1,17 @@
+node_modules
+dist
+out
+release
+coverage
+output
+test-results
+pnpm-lock.yaml
+AGENTS.md
+ARCHITECTURE.md
+CODEX-HANDOFF.md
+DATABASE.md
+JOB-ENGINE.md
+MVP.md
+*.db
+*.db-shm
+*.db-wal

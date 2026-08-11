@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1786474442705,
+      "tag": "0000_funny_johnny_storm",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1786474457685,
+      "tag": "0001_search-foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1786475287807,
+      "tag": "0002_destination-timestamps",
+      "breakpoints": true
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "name": "youtube-backup-manager",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first YouTube backup manager for Windows",
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "pnpm@11.21.0",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "corepack pnpm -r --filter './packages/**' build && corepack pnpm --filter @ytbm/desktop dev",
+    "build": "corepack pnpm -r --if-present build",
+    "package:dir": "corepack pnpm build && corepack pnpm --filter @ytbm/desktop package:dir",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "typecheck": "corepack pnpm -r --if-present typecheck",
+    "test": "vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "test:e2e": "playwright test --config playwright.config.ts"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@playwright/test": "1.62.1",
+    "@types/node": "26.2.0",
+    "eslint": "10.8.1",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "globals": "17.9.0",
+    "prettier": "3.9.6",
+    "pnpm": "11.21.0",
+    "tsup": "8.5.1",
+    "tsx": "4.23.12",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.67.0",
+    "vitest": "4.1.10"
+  }
+}
