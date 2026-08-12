@@ -1,17 +1,18 @@
 import { JobStatusSchema, type JobStatus } from '@ytbm/core';
 
 const ALLOWED_TRANSITIONS: Readonly<Record<JobStatus, ReadonlySet<JobStatus>>> = {
-  PENDING: new Set(['READY', 'BLOCKED', 'CANCELLED']),
+  PENDING: new Set(['READY', 'PAUSED', 'BLOCKED', 'CANCELLED']),
   READY: new Set(['RUNNING', 'PAUSED', 'CANCELLED']),
   RUNNING: new Set([
     'COMPLETED',
     'RETRY_WAIT',
     'FAILED',
+    'BLOCKED',
     'PAUSE_REQUESTED',
     'CANCEL_REQUESTED',
     'INTERRUPTED',
   ]),
-  PAUSE_REQUESTED: new Set(['PAUSED', 'FAILED', 'INTERRUPTED']),
+  PAUSE_REQUESTED: new Set(['PAUSED', 'CANCEL_REQUESTED', 'FAILED', 'INTERRUPTED']),
   PAUSED: new Set(['READY', 'CANCELLED']),
   RETRY_WAIT: new Set(['READY', 'CANCELLED']),
   CANCEL_REQUESTED: new Set(['CANCELLED', 'FAILED', 'INTERRUPTED']),

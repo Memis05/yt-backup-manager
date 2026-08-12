@@ -5,6 +5,7 @@ import { assertJobTransition, canTransitionJob } from '../src';
 describe('job transition foundation', () => {
   it('permits documented durable transitions', () => {
     expect(canTransitionJob('PENDING', 'READY')).toBe(true);
+    expect(canTransitionJob('PENDING', 'PAUSED')).toBe(true);
     expect(canTransitionJob('RUNNING', 'INTERRUPTED')).toBe(true);
     expect(() => assertJobTransition('PAUSED', 'READY')).not.toThrow();
   });

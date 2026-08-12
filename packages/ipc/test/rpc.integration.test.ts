@@ -17,7 +17,7 @@ const defaultSettings = {
   startWithWindows: false,
   startMinimized: false,
   checkForUpdates: true,
-  defaultQualityProfile: 'UP_TO_1080P' as const,
+  defaultQualityProfile: 'MAX_1080P' as const,
   concurrentDownloads: 2,
   concurrentLocalCopies: 2,
   concurrentDriveUploads: 2,
@@ -28,6 +28,9 @@ const defaultSettings = {
     authenticationRequired: true,
     integrityProblems: true,
   },
+};
+const unimplemented = (): never => {
+  throw new Error('Not used by this transport test');
 };
 const handlers: WorkerRpcHandlers = {
   'worker.health': () => ({
@@ -129,6 +132,19 @@ const handlers: WorkerRpcHandlers = {
   'library.query': ({ page, pageSize }) => ({ items: [], total: 0, page, pageSize }),
   'playlists.query': ({ page, pageSize }) => ({ items: [], total: 0, page, pageSize }),
   'playlists.members': ({ page, pageSize }) => ({ items: [], total: 0, page, pageSize }),
+  'destinations.addFilesystem': unimplemented,
+  'destinations.list': unimplemented,
+  'destinations.disable': unimplemented,
+  'backup.channelSettings': unimplemented,
+  'backup.updateChannelSettings': unimplemented,
+  'backup.start': unimplemented,
+  'backup.runs': unimplemented,
+  'backup.controlRun': unimplemented,
+  'jobs.snapshot': unimplemented,
+  'jobs.control': unimplemented,
+  'media.backupDetails': unimplemented,
+  'media.resolveVerifiedFolder': unimplemented,
+  'tools.diagnostics': unimplemented,
 };
 
 describe('authenticated worker RPC transport', () => {

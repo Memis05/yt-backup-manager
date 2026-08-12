@@ -31,9 +31,11 @@ export const SettingsPatchSchema = AppSettingsSchema.partial()
 
 export const RendererSettingsPatchSchema = z
   .object({
-    startMinimized: z.boolean(),
+    startMinimized: z.boolean().optional(),
+    defaultQualityProfile: QualityProfileSchema.optional(),
   })
-  .strict();
+  .strict()
+  .refine((value) => Object.keys(value).length > 0, 'At least one setting is required');
 
 export type AppSettings = z.infer<typeof AppSettingsSchema>;
 export type SettingsPatch = z.infer<typeof SettingsPatchSchema>;
@@ -43,7 +45,7 @@ export const DEFAULT_APP_SETTINGS: Readonly<AppSettings> = Object.freeze({
   startWithWindows: false,
   startMinimized: false,
   checkForUpdates: true,
-  defaultQualityProfile: 'UP_TO_1080P',
+  defaultQualityProfile: 'MAX_1080P',
   concurrentDownloads: 2,
   concurrentLocalCopies: 2,
   concurrentDriveUploads: 2,
@@ -61,6 +63,21 @@ export interface SettingsRepository {
   writeApplicationSettings(value: AppSettings, updatedAt: number): Promise<void>;
 }
 
+function normalizeLegacyQualityProfile(value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
+  const settings = { ...value } as Record<string, unknown>;
+  const legacyProfiles: Readonly<Record<string, string>> = {
+    UP_TO_4K: 'MAX_4K',
+    UP_TO_1080P: 'MAX_1080P',
+    UP_TO_720P: 'MAX_720P',
+  };
+  const profile = settings.defaultQualityProfile;
+  if (typeof profile === 'string' && legacyProfiles[profile] !== undefined) {
+    settings.defaultQualityProfile = legacyProfiles[profile];
+  }
+  return settings;
+}
+
 export class SettingsService {
   public constructor(
     private readonly repository: SettingsRepository,
@@ -73,7 +90,7 @@ export class SettingsService {
       return AppSettingsSchema.parse(DEFAULT_APP_SETTINGS);
     }
 
-    return AppSettingsSchema.parse(stored);
+    return AppSettingsSchema.parse(normalizeLegacyQualityProfile(stored));
   }
 
   public async update(patchInput: unknown): Promise<AppSettings> {

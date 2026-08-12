@@ -104,8 +104,13 @@ export class DesktopWorkerManager {
 
   private spawnWorker(): void {
     const args = this.app.isPackaged
-      ? ['--worker', '--spawned-by-desktop']
-      : [process.argv[1] ?? this.app.getAppPath(), '--worker', '--spawned-by-desktop'];
+      ? ['--disable-gpu', '--worker', '--spawned-by-desktop']
+      : [
+          process.argv[1] ?? this.app.getAppPath(),
+          '--disable-gpu',
+          '--worker',
+          '--spawned-by-desktop',
+        ];
     this.spawnedProcess = spawn(process.execPath, args, {
       detached: true,
       windowsHide: true,

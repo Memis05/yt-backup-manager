@@ -1,6 +1,14 @@
 import type { IpcMain } from 'electron';
 
-import type { CatalogQuery, PlaylistMembersQuery, PlaylistQuery } from '@ytbm/core';
+import type {
+  CatalogQuery,
+  ChannelBackupSettingsPatch,
+  JobControlAction,
+  PlaylistMembersQuery,
+  PlaylistQuery,
+  QueueQuery,
+  RunControlAction,
+} from '@ytbm/core';
 import {
   DESKTOP_IPC_CHANNELS,
   parseDesktopIpcInput,
@@ -17,18 +25,24 @@ export interface IpcHandlerRegistrar {
 }
 
 export type OpenExternalUrl = (url: string) => Promise<void>;
+export type ChooseFilesystemDestination = () => Promise<string | null>;
+export type AuthorizeIpcEvent = (event: unknown) => boolean;
 
 export function registerDesktopIpcHandlers(
   ipcMain: IpcHandlerRegistrar | IpcMain,
   worker: WorkerRpcClient,
   openExternal: OpenExternalUrl,
+  chooseFilesystemDestination: ChooseFilesystemDestination,
   openLogFolder: () => Promise<void>,
+  openKnownFolder: (path: string) => Promise<void>,
+  authorizeIpcEvent: AuthorizeIpcEvent,
 ): () => void {
   const handle = (
     channel: DesktopIpcChannel,
     handler: (input: unknown) => Promise<unknown>,
   ): void => {
-    ipcMain.handle(channel, async (_event, input) => {
+    ipcMain.handle(channel, async (event, input) => {
+      if (!authorizeIpcEvent(event)) throw new Error('Desktop IPC sender is not authorized');
       const parsed = parseDesktopIpcInput(channel, input);
       return parseDesktopIpcOutput(channel, await handler(parsed));
     });
@@ -97,6 +111,60 @@ export function registerDesktopIpcHandlers(
   handle(DESKTOP_IPC_CHANNELS.playlistMembers, async (input) =>
     worker.request('playlists.members', input as PlaylistMembersQuery),
   );
+  handle(DESKTOP_IPC_CHANNELS.chooseFilesystemDestination, async () => {
+    const rootPath = await chooseFilesystemDestination();
+    return rootPath === null
+      ? ({ status: 'CANCELLED' } as const)
+      : ({
+          status: 'ADDED',
+          destination: await worker.request('destinations.addFilesystem', { rootPath }),
+        } as const);
+  });
+  handle(DESKTOP_IPC_CHANNELS.destinationsList, async () =>
+    worker.request('destinations.list', {}),
+  );
+  handle(DESKTOP_IPC_CHANNELS.disableDestination, async (input) =>
+    worker.request('destinations.disable', input as { destinationId: string }),
+  );
+  handle(DESKTOP_IPC_CHANNELS.channelBackupSettings, async (input) =>
+    worker.request('backup.channelSettings', input as { channelId: string }),
+  );
+  handle(DESKTOP_IPC_CHANNELS.updateChannelBackupSettings, async (input) =>
+    worker.request('backup.updateChannelSettings', input as ChannelBackupSettingsPatch),
+  );
+  handle(DESKTOP_IPC_CHANNELS.startBackup, async (input) =>
+    worker.request('backup.start', input as { channelId: string }),
+  );
+  handle(DESKTOP_IPC_CHANNELS.backupRuns, async () => worker.request('backup.runs', {}));
+  handle(DESKTOP_IPC_CHANNELS.controlBackupRun, async (input) =>
+    worker.request('backup.controlRun', input as { runId: string; action: RunControlAction }),
+  );
+  handle(DESKTOP_IPC_CHANNELS.queueSnapshot, async (input) =>
+    worker.request('jobs.snapshot', input as QueueQuery),
+  );
+  handle(DESKTOP_IPC_CHANNELS.controlJob, async (input) =>
+    worker.request('jobs.control', input as { jobId: string; action: JobControlAction }),
+  );
+  handle(DESKTOP_IPC_CHANNELS.mediaBackupDetails, async (input) =>
+    worker.request('media.backupDetails', input as { mediaItemId: string }),
+  );
+  handle(DESKTOP_IPC_CHANNELS.openVerifiedCopyFolder, async (input) => {
+    const result = await worker.request(
+      'media.resolveVerifiedFolder',
+      input as { mediaCopyId: string },
+    );
+    if (result.status !== 'AVAILABLE') return result;
+    try {
+      await openKnownFolder(result.folderPath);
+      return { status: 'OPENED' } as const;
+    } catch {
+      return {
+        status: 'UNAVAILABLE',
+        safeMessage: 'The verified backup folder could not be opened.',
+      } as const;
+    }
+  });
+  handle(DESKTOP_IPC_CHANNELS.toolDiagnostics, async () => worker.request('tools.diagnostics', {}));
 
   return () => {
     for (const channel of Object.values(DESKTOP_IPC_CHANNELS)) ipcMain.removeHandler(channel);

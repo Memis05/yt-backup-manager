@@ -14,11 +14,20 @@ export default defineConfig({
     alias: {
       '@ytbm/core': resolve(import.meta.dirname, 'packages/core/src/index.ts'),
       '@ytbm/database/worker': resolve(import.meta.dirname, 'packages/database/src/index.ts'),
+      '@ytbm/download-ytdlp': resolve(import.meta.dirname, 'packages/download-ytdlp/src/index.ts'),
+      '@ytbm/integrity': resolve(import.meta.dirname, 'packages/integrity/src/index.ts'),
       '@ytbm/ipc': resolve(import.meta.dirname, 'packages/ipc/src/index.ts'),
       '@ytbm/job-engine': resolve(import.meta.dirname, 'packages/job-engine/src/index.ts'),
+      '@ytbm/manifest': resolve(import.meta.dirname, 'packages/manifest/src/index.ts'),
+      '@ytbm/media-ffmpeg': resolve(import.meta.dirname, 'packages/media-ffmpeg/src/index.ts'),
       '@ytbm/security': resolve(import.meta.dirname, 'packages/security/src/index.ts'),
       '@ytbm/shared': resolve(import.meta.dirname, 'packages/shared/src/index.ts'),
       '@ytbm/source-youtube': resolve(import.meta.dirname, 'packages/source-youtube/src/index.ts'),
+      '@ytbm/storage-core': resolve(import.meta.dirname, 'packages/storage-core/src/index.ts'),
+      '@ytbm/storage-filesystem': resolve(
+        import.meta.dirname,
+        'packages/storage-filesystem/src/index.ts',
+      ),
     },
   },
   test: {

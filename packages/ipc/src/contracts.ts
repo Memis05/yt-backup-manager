@@ -5,21 +5,36 @@ import {
   ApplicationInfoSchema,
   CatalogQuerySchema,
   ChannelDtoSchema,
+  ChannelBackupSettingsDtoSchema,
+  ChannelBackupSettingsPatchSchema,
   ChannelsListResultSchema,
   DatabaseHealthSchema,
   FoundationStatusSchema,
+  BackupRunsListResultSchema,
+  BackupStartResultSchema,
+  DestinationsListResultSchema,
+  DestinationDtoSchema,
+  JobControlActionSchema,
   LibraryQueryResultSchema,
+  MediaBackupDetailsSchema,
   OAuthBeginResultSchema,
   OAuthBeginWorkerResultSchema,
   OAuthFlowDtoSchema,
+  OpenVerifiedCopyFolderResultSchema,
   PlaylistMembersQuerySchema,
   PlaylistMembersResultSchema,
   PlaylistQueryResultSchema,
   PlaylistQuerySchema,
   RendererSettingsPatchSchema,
+  QueueJobDtoSchema,
+  QueueQuerySchema,
+  QueueSnapshotSchema,
+  ResolveVerifiedCopyFolderResultSchema,
+  RunControlActionSchema,
   SettingsPatchSchema,
   SourceSyncJobDtoSchema,
   WorkerHealthSchema,
+  ToolDiagnosticsSchema,
 } from '@ytbm/core';
 import { z } from 'zod';
 
@@ -112,6 +127,58 @@ export const WorkerRpcContracts = {
   'playlists.members': {
     params: PlaylistMembersQuerySchema,
     result: PlaylistMembersResultSchema,
+  },
+  'destinations.addFilesystem': {
+    params: z.object({ rootPath: z.string().trim().min(1).max(1_024) }).strict(),
+    result: DestinationDtoSchema,
+  },
+  'destinations.list': {
+    params: EmptyParamsSchema,
+    result: DestinationsListResultSchema,
+  },
+  'destinations.disable': {
+    params: z.object({ destinationId: z.string().uuid() }).strict(),
+    result: z.object({ disabled: z.literal(true) }).strict(),
+  },
+  'backup.channelSettings': {
+    params: z.object({ channelId: z.string().uuid() }).strict(),
+    result: ChannelBackupSettingsDtoSchema,
+  },
+  'backup.updateChannelSettings': {
+    params: ChannelBackupSettingsPatchSchema,
+    result: ChannelBackupSettingsDtoSchema,
+  },
+  'backup.start': {
+    params: z.object({ channelId: z.string().uuid() }).strict(),
+    result: BackupStartResultSchema,
+  },
+  'backup.runs': {
+    params: EmptyParamsSchema,
+    result: BackupRunsListResultSchema,
+  },
+  'backup.controlRun': {
+    params: z.object({ runId: z.string().uuid(), action: RunControlActionSchema }).strict(),
+    result: z.object({ accepted: z.literal(true) }).strict(),
+  },
+  'jobs.snapshot': {
+    params: QueueQuerySchema,
+    result: QueueSnapshotSchema,
+  },
+  'jobs.control': {
+    params: z.object({ jobId: z.string().uuid(), action: JobControlActionSchema }).strict(),
+    result: QueueJobDtoSchema,
+  },
+  'media.backupDetails': {
+    params: z.object({ mediaItemId: z.string().uuid() }).strict(),
+    result: MediaBackupDetailsSchema,
+  },
+  'media.resolveVerifiedFolder': {
+    params: z.object({ mediaCopyId: z.string().uuid() }).strict(),
+    result: ResolveVerifiedCopyFolderResultSchema,
+  },
+  'tools.diagnostics': {
+    params: EmptyParamsSchema,
+    result: ToolDiagnosticsSchema,
   },
 } as const;
 
@@ -232,6 +299,19 @@ export const DESKTOP_IPC_CHANNELS = {
   libraryQuery: 'ytbm:library-query',
   playlistsQuery: 'ytbm:playlists-query',
   playlistMembers: 'ytbm:playlists-members',
+  chooseFilesystemDestination: 'ytbm:destinations-choose-filesystem',
+  destinationsList: 'ytbm:destinations-list',
+  disableDestination: 'ytbm:destinations-disable',
+  channelBackupSettings: 'ytbm:backup-channel-settings',
+  updateChannelBackupSettings: 'ytbm:backup-update-channel-settings',
+  startBackup: 'ytbm:backup-start',
+  backupRuns: 'ytbm:backup-runs',
+  controlBackupRun: 'ytbm:backup-control-run',
+  queueSnapshot: 'ytbm:queue-snapshot',
+  controlJob: 'ytbm:jobs-control',
+  mediaBackupDetails: 'ytbm:media-backup-details',
+  openVerifiedCopyFolder: 'ytbm:media-open-verified-folder',
+  toolDiagnostics: 'ytbm:tools-diagnostics',
 } as const;
 
 export type DesktopIpcChannel = (typeof DESKTOP_IPC_CHANNELS)[keyof typeof DESKTOP_IPC_CHANNELS];
@@ -298,6 +378,61 @@ const DesktopIpcContracts = {
   [DESKTOP_IPC_CHANNELS.playlistMembers]: {
     input: PlaylistMembersQuerySchema,
     output: PlaylistMembersResultSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.chooseFilesystemDestination]: {
+    input: EmptyParamsSchema,
+    output: z.discriminatedUnion('status', [
+      z.object({ status: z.literal('ADDED'), destination: DestinationDtoSchema }).strict(),
+      z.object({ status: z.literal('CANCELLED') }).strict(),
+    ]),
+  },
+  [DESKTOP_IPC_CHANNELS.destinationsList]: {
+    input: EmptyParamsSchema,
+    output: DestinationsListResultSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.disableDestination]: {
+    input: z.object({ destinationId: z.string().uuid() }).strict(),
+    output: z.object({ disabled: z.literal(true) }).strict(),
+  },
+  [DESKTOP_IPC_CHANNELS.channelBackupSettings]: {
+    input: z.object({ channelId: z.string().uuid() }).strict(),
+    output: ChannelBackupSettingsDtoSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.updateChannelBackupSettings]: {
+    input: ChannelBackupSettingsPatchSchema,
+    output: ChannelBackupSettingsDtoSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.startBackup]: {
+    input: z.object({ channelId: z.string().uuid() }).strict(),
+    output: BackupStartResultSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.backupRuns]: {
+    input: EmptyParamsSchema,
+    output: BackupRunsListResultSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.controlBackupRun]: {
+    input: z.object({ runId: z.string().uuid(), action: RunControlActionSchema }).strict(),
+    output: z.object({ accepted: z.literal(true) }).strict(),
+  },
+  [DESKTOP_IPC_CHANNELS.queueSnapshot]: {
+    input: QueueQuerySchema,
+    output: QueueSnapshotSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.controlJob]: {
+    input: z.object({ jobId: z.string().uuid(), action: JobControlActionSchema }).strict(),
+    output: QueueJobDtoSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.mediaBackupDetails]: {
+    input: z.object({ mediaItemId: z.string().uuid() }).strict(),
+    output: MediaBackupDetailsSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.openVerifiedCopyFolder]: {
+    input: z.object({ mediaCopyId: z.string().uuid() }).strict(),
+    output: OpenVerifiedCopyFolderResultSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.toolDiagnostics]: {
+    input: EmptyParamsSchema,
+    output: ToolDiagnosticsSchema,
   },
 } as const;
 

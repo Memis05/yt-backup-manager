@@ -107,12 +107,24 @@ importers:
       '@ytbm/database':
         specifier: workspace:*
         version: link:../../packages/database
+      '@ytbm/download-ytdlp':
+        specifier: workspace:*
+        version: link:../../packages/download-ytdlp
+      '@ytbm/integrity':
+        specifier: workspace:*
+        version: link:../../packages/integrity
       '@ytbm/ipc':
         specifier: workspace:*
         version: link:../../packages/ipc
       '@ytbm/job-engine':
         specifier: workspace:*
         version: link:../../packages/job-engine
+      '@ytbm/manifest':
+        specifier: workspace:*
+        version: link:../../packages/manifest
+      '@ytbm/media-ffmpeg':
+        specifier: workspace:*
+        version: link:../../packages/media-ffmpeg
       '@ytbm/security':
         specifier: workspace:*
         version: link:../../packages/security
@@ -122,6 +134,12 @@ importers:
       '@ytbm/source-youtube':
         specifier: workspace:*
         version: link:../../packages/source-youtube
+      '@ytbm/storage-core':
+        specifier: workspace:*
+        version: link:../../packages/storage-core
+      '@ytbm/storage-filesystem':
+        specifier: workspace:*
+        version: link:../../packages/storage-filesystem
       better-sqlite3:
         specifier: 'catalog:'
         version: 13.0.3
@@ -177,9 +195,15 @@ importers:
       '@ytbm/core':
         specifier: workspace:*
         version: link:../core
+      '@ytbm/job-engine':
+        specifier: workspace:*
+        version: link:../job-engine
       '@ytbm/source-youtube':
         specifier: workspace:*
         version: link:../source-youtube
+      '@ytbm/storage-core':
+        specifier: workspace:*
+        version: link:../storage-core
       better-sqlite3:
         specifier: 'catalog:'
         version: 13.0.3
@@ -194,6 +218,14 @@ importers:
         specifier: 'catalog:'
         version: 0.31.10
 
+  packages/download-ytdlp:
+    dependencies:
+      '@ytbm/core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/integrity: {}
+
   packages/ipc:
     dependencies:
       '@ytbm/core':
@@ -207,6 +239,21 @@ importers:
         version: 4.4.3
 
   packages/job-engine:
+    dependencies:
+      '@ytbm/core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/manifest:
+    dependencies:
+      '@ytbm/core':
+        specifier: workspace:*
+        version: link:../core
+      zod:
+        specifier: 'catalog:'
+        version: 4.4.3
+
+  packages/media-ffmpeg:
     dependencies:
       '@ytbm/core':
         specifier: workspace:*
@@ -227,6 +274,24 @@ importers:
       zod:
         specifier: 'catalog:'
         version: 4.4.3
+
+  packages/storage-core:
+    dependencies:
+      '@ytbm/core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/storage-filesystem:
+    dependencies:
+      '@ytbm/core':
+        specifier: workspace:*
+        version: link:../core
+      '@ytbm/integrity':
+        specifier: workspace:*
+        version: link:../integrity
+      '@ytbm/storage-core':
+        specifier: workspace:*
+        version: link:../storage-core
 
 packages:
 

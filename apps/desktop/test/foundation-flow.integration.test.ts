@@ -2,6 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { acquireWorkerDatabaseOwnership, openWorkerDatabase } from '@ytbm/database/worker';
 import { DESKTOP_IPC_CHANNELS, WorkerRpcClient, createUserScopedEndpoints } from '@ytbm/ipc';
 import {
   MemoryLogSink,
@@ -40,12 +41,30 @@ describe('desktop-to-worker foundation flow', () => {
       userData: join(directory, 'user-data'),
       localData: join(directory, 'local-data'),
     });
+    const channelId = crypto.randomUUID();
+    const now = Date.now();
+    const seedDatabase = openWorkerDatabase({
+      databasePath: config.paths.database,
+      ownership: acquireWorkerDatabaseOwnership(),
+    });
+    seedDatabase.sqlite
+      .prepare(
+        `insert into channels (
+          id, source_provider, provider_channel_id, title, backup_enabled, source_status,
+          first_seen_at, last_seen_at, last_sync_at, created_at, updated_at
+        ) values (?, 'YOUTUBE', 'UCdesktopflow', 'Desktop Flow Channel', 1, 'AVAILABLE',
+          ?, ?, ?, ?, ?)`,
+      )
+      .run(channelId, now, now, now, now, now);
+    seedDatabase.close();
     const runtime = new WorkerRuntime({
       config: { ...config, environment: 'test' },
       version: '0.1.0-test',
       mode: 'DIRECT',
       encryption: testEncryption,
       logSink: new MemoryLogSink(),
+      ytDlpExecutable: join(directory, 'yt-dlp.exe'),
+      ffmpegExecutable: join(directory, 'ffmpeg.exe'),
     });
     runtimes.push(runtime);
     await expect(runtime.start()).resolves.toBe(true);
@@ -74,25 +93,43 @@ describe('desktop-to-worker foundation flow', () => {
       removeHandler: (channel) => void handlers.delete(channel),
     };
     let logFolderOpened = false;
+    let destinationPickerOpened = false;
+    let ipcAuthorized = true;
     const unregister = registerDesktopIpcHandlers(
       registrar,
       client,
       async () => undefined,
       async () => {
+        destinationPickerOpened = true;
+        return join(directory, 'chosen-backup');
+      },
+      async () => {
         logFolderOpened = true;
       },
+      async () => undefined,
+      () => ipcAuthorized,
     );
     const foundationHandler = handlers.get(DESKTOP_IPC_CHANNELS.foundationStatus);
     const settingsHandler = handlers.get(DESKTOP_IPC_CHANNELS.updateSettings);
     const openLogsHandler = handlers.get(DESKTOP_IPC_CHANNELS.openLogFolder);
+    const chooseDestinationHandler = handlers.get(DESKTOP_IPC_CHANNELS.chooseFilesystemDestination);
+    const updateBackupSettingsHandler = handlers.get(
+      DESKTOP_IPC_CHANNELS.updateChannelBackupSettings,
+    );
+    const startBackupHandler = handlers.get(DESKTOP_IPC_CHANNELS.startBackup);
+    const queueHandler = handlers.get(DESKTOP_IPC_CHANNELS.queueSnapshot);
     expect(foundationHandler).toBeDefined();
     expect(settingsHandler).toBeDefined();
     expect(openLogsHandler).toBeDefined();
+    expect(chooseDestinationHandler).toBeDefined();
+    expect(updateBackupSettingsHandler).toBeDefined();
+    expect(startBackupHandler).toBeDefined();
+    expect(queueHandler).toBeDefined();
 
     await expect(foundationHandler!(null, {})).resolves.toMatchObject({
       worker: { status: 'READY' },
       database: {
-        schemaVersion: 4,
+        schemaVersion: 5,
         foreignKeysEnabled: true,
         journalMode: 'wal',
       },
@@ -105,6 +142,37 @@ describe('desktop-to-worker foundation flow', () => {
     });
     await expect(openLogsHandler!(null, {})).resolves.toEqual({ opened: true });
     expect(logFolderOpened).toBe(true);
+    const chooseResult = (await chooseDestinationHandler!(null, {})) as {
+      status: 'ADDED';
+      destination: { id: string; availabilityStatus: string };
+    };
+    expect(chooseResult.status).toBe('ADDED');
+    expect(destinationPickerOpened).toBe(true);
+    const destination = chooseResult.destination;
+    expect(destination.availabilityStatus).toBe('AVAILABLE');
+    await expect(
+      updateBackupSettingsHandler!(null, {
+        channelId,
+        qualityProfileOverride: null,
+        destinationIds: [destination.id],
+      }),
+    ).resolves.toMatchObject({ channelId, destinationIds: [destination.id] });
+    await expect(startBackupHandler!(null, { channelId })).resolves.toMatchObject({
+      run: { channelId, destinationIds: [destination.id], status: 'RUNNING' },
+      plannedJobs: 1,
+    });
+    await expect(
+      queueHandler!(null, { section: 'ALL', page: 1, pageSize: 50 }),
+    ).resolves.toMatchObject({
+      section: 'ALL',
+      page: 1,
+      pageSize: 50,
+      totalItems: 1,
+      totalJobCount: 1,
+      jobs: [{ jobType: 'UPDATE_MANIFEST' }],
+    });
+    ipcAuthorized = false;
+    await expect(foundationHandler!(null, {})).rejects.toThrow(/not authorized/);
 
     unregister();
     client.close();

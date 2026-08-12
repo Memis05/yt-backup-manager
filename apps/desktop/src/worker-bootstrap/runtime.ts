@@ -35,6 +35,7 @@ import {
 } from '@ytbm/source-youtube';
 
 import type { RuntimeConfig } from '../config/runtime';
+import { LocalBackupRuntime } from './backup-runtime';
 
 export interface WorkerRuntimeOptions {
   config: RuntimeConfig;
@@ -44,6 +45,8 @@ export interface WorkerRuntimeOptions {
   logSink?: LogSink;
   now?: () => number;
   onShutdownRequested?: () => void;
+  ytDlpExecutable: string;
+  ffmpegExecutable: string;
 }
 
 export class WorkerRuntime {
@@ -56,12 +59,14 @@ export class WorkerRuntime {
   private database: WorkerDatabase | null = null;
   private googleAccounts: GoogleAccountService | null = null;
   private sourceSync: SourceSyncCoordinator | null = null;
+  private localBackup: LocalBackupRuntime | null = null;
 
   public constructor(private readonly options: WorkerRuntimeOptions) {
     this.now = options.now ?? Date.now;
     this.startedAt = this.now();
     mkdirSync(options.config.paths.runtime, { recursive: true, mode: 0o700 });
     mkdirSync(options.config.paths.logs, { recursive: true, mode: 0o700 });
+    mkdirSync(options.config.paths.staging, { recursive: true, mode: 0o700 });
     const sink =
       options.logSink ?? new JsonLinesFileSink(join(options.config.paths.logs, 'worker.jsonl'));
     this.logger = new StructuredLogger('worker', sink, { workerInstanceId: this.instanceId });
@@ -131,6 +136,16 @@ export class WorkerRuntime {
           );
         },
       );
+      this.localBackup = new LocalBackupRuntime({
+        workerId: this.instanceId,
+        database: this.database,
+        stagingRoot: this.options.config.paths.staging,
+        ytDlpExecutable: this.options.ytDlpExecutable,
+        ffmpegExecutable: this.options.ffmpegExecutable,
+        logger: this.logger,
+        settings: () => settings.get(),
+        now: this.now,
+      });
 
       const endpoints = createUserScopedEndpoints(this.options.config.paths.runtime);
       const authToken = await new RpcAuthTokenStore(
@@ -146,7 +161,8 @@ export class WorkerRuntime {
           if (
             this.options.onShutdownRequested === undefined ||
             this.sourceSync?.isIdle() === false ||
-            this.googleAccounts?.isIdle() === false
+            this.googleAccounts?.isIdle() === false ||
+            this.localBackup?.isIdle() === false
           ) {
             return { accepted: false };
           }
@@ -179,10 +195,35 @@ export class WorkerRuntime {
         'library.query': (query) => catalog.queryLibrary(query),
         'playlists.query': (query) => catalog.queryPlaylists(query),
         'playlists.members': (query) => catalog.queryPlaylistMembers(query),
+        'destinations.addFilesystem': ({ rootPath }) => this.localBackup!.addDestination(rootPath),
+        'destinations.list': async () => ({
+          destinations: await this.localBackup!.listDestinations(),
+        }),
+        'destinations.disable': ({ destinationId }) => {
+          this.localBackup!.disableDestination(destinationId);
+          return { disabled: true };
+        },
+        'backup.channelSettings': ({ channelId }) =>
+          this.localBackup!.getChannelSettings(channelId),
+        'backup.updateChannelSettings': (input) => this.localBackup!.setChannelSettings(input),
+        'backup.start': ({ channelId }) => this.localBackup!.startBackup(channelId),
+        'backup.runs': async () => ({ runs: this.localBackup!.listRuns() }),
+        'backup.controlRun': ({ runId, action }) => {
+          this.localBackup!.controlRun(runId, action);
+          return { accepted: true };
+        },
+        'jobs.snapshot': (query) => this.localBackup!.queueSnapshot(query),
+        'jobs.control': ({ jobId, action }) => this.localBackup!.controlJob(jobId, action),
+        'media.backupDetails': ({ mediaItemId }) =>
+          this.localBackup!.reconciledMediaDetails(mediaItemId),
+        'media.resolveVerifiedFolder': ({ mediaCopyId }) =>
+          this.localBackup!.resolveVerifiedCopyFolder(mediaCopyId),
+        'tools.diagnostics': () => this.localBackup!.diagnostics(),
       };
       this.rpcServer = new WorkerRpcServer(endpoints.rpc, authToken, handlers);
       await this.rpcServer.start();
       this.sourceSync.resumePending();
+      this.localBackup.start();
       this.logger.info('Worker ready', { mode: this.options.mode });
       return true;
     } catch (error) {
@@ -200,6 +241,8 @@ export class WorkerRuntime {
     this.sourceSync = null;
     await this.googleAccounts?.stop();
     this.googleAccounts = null;
+    await this.localBackup?.stop();
+    this.localBackup = null;
     this.database?.close();
     this.database = null;
     await this.singleton.release();

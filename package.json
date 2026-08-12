@@ -12,7 +12,8 @@
   "scripts": {
     "dev": "corepack pnpm -r --filter './packages/**' build && corepack pnpm --filter @ytbm/desktop dev",
     "build": "corepack pnpm -r --if-present build",
-    "package:dir": "corepack pnpm build && corepack pnpm --filter @ytbm/desktop package:dir",
+    "package:dir": "node scripts/verify-managed-binaries.mjs && corepack pnpm build && corepack pnpm --filter @ytbm/desktop package:dir",
+    "test:package-smoke": "node scripts/packaged-worker-smoke.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",

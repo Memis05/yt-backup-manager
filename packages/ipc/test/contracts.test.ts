@@ -46,6 +46,85 @@ describe('validated IPC contracts', () => {
     ).toThrow(RpcProtocolError);
   });
 
+  it('allows only a result-only folder chooser contract', () => {
+    expect(parseDesktopIpcInput(DESKTOP_IPC_CHANNELS.chooseFilesystemDestination, {})).toEqual({});
+    expect(() =>
+      parseDesktopIpcInput(DESKTOP_IPC_CHANNELS.chooseFilesystemDestination, {
+        defaultPath: 'C:\\arbitrary-renderer-path',
+      }),
+    ).toThrow(RpcProtocolError);
+    expect(
+      parseDesktopIpcOutput(DESKTOP_IPC_CHANNELS.chooseFilesystemDestination, {
+        status: 'ADDED',
+        destination: {
+          id: '123e4567-e89b-42d3-a456-426614174000',
+          destinationType: 'FILESYSTEM',
+          rootPath: 'D:\\YouTube Backup',
+          enabled: true,
+          availabilityStatus: 'AVAILABLE',
+          volumeGuid: null,
+          volumeSerial: null,
+          filesystemType: null,
+          lastKnownMountPath: null,
+          availableBytes: null,
+          totalBytes: null,
+          lastProbeAt: null,
+          safeMessage: null,
+        },
+      }),
+    ).toMatchObject({
+      status: 'ADDED',
+      destination: { rootPath: 'D:\\YouTube Backup' },
+    });
+    expect(
+      parseDesktopIpcOutput(DESKTOP_IPC_CHANNELS.chooseFilesystemDestination, {
+        status: 'CANCELLED',
+      }),
+    ).toEqual({ status: 'CANCELLED' });
+  });
+
+  it('limits queue queries to the approved paginated views', () => {
+    expect(
+      parseDesktopIpcInput(DESKTOP_IPC_CHANNELS.queueSnapshot, {
+        section: 'WAITING_DOWNLOADS',
+        page: 1,
+        pageSize: 50,
+      }),
+    ).toEqual({ section: 'WAITING_DOWNLOADS', page: 1, pageSize: 50 });
+    expect(() =>
+      parseDesktopIpcInput(DESKTOP_IPC_CHANNELS.queueSnapshot, {
+        section: 'CUSTOM_SQL',
+        page: 1,
+        pageSize: 50,
+      }),
+    ).toThrow(RpcProtocolError);
+    expect(() =>
+      parseDesktopIpcInput(DESKTOP_IPC_CHANNELS.queueSnapshot, {
+        section: 'ALL',
+        page: 1,
+        pageSize: 1_000,
+      }),
+    ).toThrow(RpcProtocolError);
+  });
+
+  it('returns stale-copy folder failures as safe renderer states', () => {
+    expect(
+      parseDesktopIpcOutput(DESKTOP_IPC_CHANNELS.openVerifiedCopyFolder, {
+        status: 'MISSING',
+        safeMessage: 'This backup file is missing. Start Backup now to recreate it.',
+      }),
+    ).toEqual({
+      status: 'MISSING',
+      safeMessage: 'This backup file is missing. Start Backup now to recreate it.',
+    });
+    expect(() =>
+      parseDesktopIpcOutput(DESKTOP_IPC_CHANNELS.openVerifiedCopyFolder, {
+        status: 'MISSING',
+        folderPath: 'C:\\secret',
+      }),
+    ).toThrow();
+  });
+
   it('rejects OAuth credentials in renderer inputs and account DTOs', () => {
     expect(() =>
       parseDesktopIpcInput(DESKTOP_IPC_CHANNELS.beginGoogleOAuth, {

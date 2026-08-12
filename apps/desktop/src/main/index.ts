@@ -1,9 +1,12 @@
 import { join } from 'node:path';
 
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 
 import { WorkerRpcClient, createUserScopedEndpoints } from '@ytbm/ipc';
+import { resolveYtDlpExecutable } from '@ytbm/download-ytdlp';
+import { resolveFfmpegExecutable } from '@ytbm/media-ffmpeg';
 import { JsonLinesFileSink, RpcAuthTokenStore, StructuredLogger } from '@ytbm/security';
+import managedBinaries from '../../../../resources/managed-binaries.json';
 
 import { loadDevelopmentEnvironment, loadRuntimeConfig } from '../config/runtime';
 import { WorkerRuntime } from '../worker-bootstrap/runtime';
@@ -11,6 +14,7 @@ import { registerDesktopIpcHandlers } from './desktop-ipc';
 import { secureWebContentsNavigation } from './external-navigation';
 import { ElectronSafeStorageAdapter } from './safe-storage-adapter';
 import { DesktopWorkerManager } from './worker-manager';
+import { verifyManagedBinaryIntegrity } from './managed-binary-integrity';
 import { createWindowOptions } from './window-options';
 
 function runtimeConfig() {
@@ -35,17 +39,38 @@ async function signalExistingScheduledWorker(): Promise<void> {
 
 async function runWorker(): Promise<void> {
   await app.whenReady();
+  const config = runtimeConfig();
   const mode = process.argv.includes('--scheduled')
     ? 'SCHEDULED'
     : process.argv.includes('--spawned-by-desktop')
       ? 'DESKTOP_SPAWNED'
       : 'DIRECT';
+  const ytDlpExecutable = resolveYtDlpExecutable({
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    appPath: app.getAppPath(),
+    developmentOverride: config.ytDlpExecutableOverride,
+  });
+  const ffmpegExecutable = resolveFfmpegExecutable({
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    appPath: app.getAppPath(),
+    developmentOverride: config.ffmpegExecutableOverride,
+  });
+  if (app.isPackaged) {
+    await verifyManagedBinaryIntegrity([
+      { name: 'yt-dlp', path: ytDlpExecutable, expectedSha256: managedBinaries.ytDlp.sha256 },
+      { name: 'FFmpeg', path: ffmpegExecutable, expectedSha256: managedBinaries.ffmpeg.sha256 },
+    ]);
+  }
   const runtime = new WorkerRuntime({
-    config: runtimeConfig(),
+    config,
     version: app.getVersion(),
     mode,
     encryption: new ElectronSafeStorageAdapter(),
     onShutdownRequested: () => app.quit(),
+    ytDlpExecutable,
+    ffmpegExecutable,
   });
   const started = await runtime.start();
   if (!started) {
@@ -84,6 +109,9 @@ async function runDesktop(): Promise<void> {
   );
   const workerManager = new DesktopWorkerManager(app, config, logger);
   const worker = await workerManager.connect();
+  const window = new BrowserWindow(
+    createWindowOptions(join(import.meta.dirname, '../preload/index.cjs')),
+  );
   const unregisterIpc = registerDesktopIpcHandlers(
     ipcMain,
     worker,
@@ -91,14 +119,27 @@ async function runDesktop(): Promise<void> {
       await shell.openExternal(url);
     },
     async () => {
+      const result = await dialog.showOpenDialog(window, {
+        title: 'Choose a local backup destination',
+        buttonLabel: 'Select folder',
+        properties: ['openDirectory', 'createDirectory', 'promptToCreate'],
+      });
+      return result.canceled ? null : (result.filePaths[0] ?? null);
+    },
+    async () => {
       const failure = await shell.openPath(config.paths.logs);
       if (failure !== '') throw new Error('The application log folder could not be opened.');
     },
+    async (path) => {
+      const failure = await shell.openPath(path);
+      if (failure !== '') throw new Error('The verified backup folder could not be opened.');
+    },
+    (event) => {
+      if (event === null || typeof event !== 'object' || !('senderFrame' in event)) return false;
+      return event.senderFrame === window.webContents.mainFrame;
+    },
   );
 
-  const window = new BrowserWindow(
-    createWindowOptions(join(import.meta.dirname, '../preload/index.cjs')),
-  );
   secureWebContentsNavigation(window.webContents);
   window.once('ready-to-show', () => window.show());
 
@@ -128,8 +169,10 @@ if (configuredUserData !== undefined && configuredUserData.trim() !== '') {
 }
 
 const workerMode = process.argv.includes('--worker');
-if (workerMode) {
+if (workerMode || process.env.YTBM_ENVIRONMENT === 'test') {
   app.disableHardwareAcceleration();
+}
+if (workerMode) {
   void runWorker();
 } else {
   void runDesktop();

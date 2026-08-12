@@ -2,25 +2,64 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react
 
 import type {
   AccountDto,
+  BackupRunDto,
   ChannelDto,
+  ChannelBackupSettingsDto,
+  DestinationDto,
   FoundationStatus,
+  JobStatus,
   LibraryQueryResult,
   MediaType,
+  MediaBackupDetails,
   OAuthFlowDto,
   PlaylistDto,
   PlaylistMembersResult,
+  QualityProfile,
+  QueueSection,
+  QueueSnapshot,
   SourceStatus,
   SourceSyncJobDto,
+  ToolDiagnostics,
 } from '@ytbm/core';
 
-type Section = 'accounts' | 'channels' | 'library' | 'playlists';
+type Section = 'accounts' | 'channels' | 'library' | 'playlists' | 'backup' | 'queue' | 'storage';
 type LibraryView = 'grid' | 'list';
+
+const QUEUE_PAGE_SIZE = 50;
+
+function queueStatusLabel(status: JobStatus): string {
+  const labels: Record<JobStatus, string> = {
+    PENDING: 'Waiting for prior step',
+    READY: 'Ready to start',
+    RUNNING: 'Active',
+    PAUSE_REQUESTED: 'Pausing',
+    PAUSED: 'Paused',
+    RETRY_WAIT: 'Waiting to retry',
+    CANCEL_REQUESTED: 'Cancelling',
+    CANCELLED: 'Cancelled',
+    COMPLETED: 'Completed',
+    FAILED: 'Failed',
+    INTERRUPTED: 'Interrupted',
+    BLOCKED: 'Needs attention',
+  };
+  return labels[status];
+}
 
 const NAVIGATION: Array<{ id: Section; label: string }> = [
   { id: 'accounts', label: 'Accounts' },
   { id: 'channels', label: 'Channels' },
   { id: 'library', label: 'Library' },
   { id: 'playlists', label: 'Playlists' },
+  { id: 'backup', label: 'Backup' },
+  { id: 'queue', label: 'Queue' },
+  { id: 'storage', label: 'Storage' },
+];
+
+const QUALITY_OPTIONS: Array<{ value: QualityProfile; label: string }> = [
+  { value: 'BEST_AVAILABLE', label: 'Best available' },
+  { value: 'MAX_4K', label: 'Up to 4K' },
+  { value: 'MAX_1080P', label: 'Up to 1080p' },
+  { value: 'MAX_720P', label: 'Up to 720p' },
 ];
 
 function safeMessage(error: unknown): string {
@@ -41,6 +80,19 @@ function formatDuration(seconds: number | null): string {
   return hours > 0
     ? `${hours}:${String(minutes).padStart(2, '0')}:${String(remainder).padStart(2, '0')}`
     : `${minutes}:${String(remainder).padStart(2, '0')}`;
+}
+
+function formatBytes(bytes: number | null): string {
+  if (bytes === null) return 'Unknown';
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let value = bytes / 1024;
+  let unit = units[0]!;
+  for (let index = 1; index < units.length && value >= 1024; index += 1) {
+    value /= 1024;
+    unit = units[index]!;
+  }
+  return `${value.toFixed(value >= 10 ? 1 : 2)} ${unit}`;
 }
 
 function StatePill({ children, tone = 'neutral' }: { children: ReactNode; tone?: string }) {
@@ -112,6 +164,16 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [oauthFlow, setOAuthFlow] = useState<OAuthFlowDto | null>(null);
   const [syncJobs, setSyncJobs] = useState<Record<string, SourceSyncJobDto>>({});
+  const [destinations, setDestinations] = useState<DestinationDto[]>([]);
+  const [backupSettings, setBackupSettings] = useState<Record<string, ChannelBackupSettingsDto>>(
+    {},
+  );
+  const [backupRuns, setBackupRuns] = useState<BackupRunDto[]>([]);
+  const [queue, setQueue] = useState<QueueSnapshot | null>(null);
+  const [queueSection, setQueueSection] = useState<QueueSection>('ACTIVE');
+  const [queuePage, setQueuePage] = useState(1);
+  const [mediaDetails, setMediaDetails] = useState<MediaBackupDetails | null>(null);
+  const [toolDiagnostics, setToolDiagnostics] = useState<ToolDiagnostics | null>(null);
 
   const [libraryView, setLibraryView] = useState<LibraryView>('grid');
   const [librarySearch, setLibrarySearch] = useState('');
@@ -144,14 +206,19 @@ export function App() {
   const [playlistMembers, setPlaylistMembers] = useState<PlaylistMembersResult | null>(null);
 
   const refreshCore = useCallback(async () => {
-    const [foundationStatus, accountItems, channelItems] = await Promise.all([
-      window.ytbm.getFoundationStatus(),
-      window.ytbm.listAccounts(),
-      window.ytbm.listChannels(),
-    ]);
+    const [foundationStatus, accountItems, channelItems, destinationItems, tools] =
+      await Promise.all([
+        window.ytbm.getFoundationStatus(),
+        window.ytbm.listAccounts(),
+        window.ytbm.listChannels(),
+        window.ytbm.listDestinations(),
+        window.ytbm.getToolDiagnostics(),
+      ]);
     setFoundation(foundationStatus);
     setAccounts(accountItems);
     setChannels(channelItems);
+    setDestinations(destinationItems);
+    setToolDiagnostics(tools);
   }, []);
 
   useEffect(() => {
@@ -160,12 +227,16 @@ export function App() {
       window.ytbm.getFoundationStatus(),
       window.ytbm.listAccounts(),
       window.ytbm.listChannels(),
+      window.ytbm.listDestinations(),
+      window.ytbm.getToolDiagnostics(),
     ])
-      .then(([foundationStatus, accountItems, channelItems]) => {
+      .then(([foundationStatus, accountItems, channelItems, destinationItems, tools]) => {
         if (!active) return;
         setFoundation(foundationStatus);
         setAccounts(accountItems);
         setChannels(channelItems);
+        setDestinations(destinationItems);
+        setToolDiagnostics(tools);
       })
       .catch((caught: unknown) => {
         if (active) setError(safeMessage(caught));
@@ -251,6 +322,53 @@ export function App() {
     }, 200);
     return () => window.clearTimeout(timer);
   }, [section, playlistChannel, playlistSearch, playlistPage]);
+
+  useEffect(() => {
+    if (section !== 'backup') return;
+    let active = true;
+    const enabledChannels = channels.filter((channel) => channel.backupEnabled);
+    void Promise.all([
+      window.ytbm.listBackupRuns(),
+      ...enabledChannels.map((channel) => window.ytbm.getChannelBackupSettings(channel.id)),
+    ])
+      .then(([runs, ...settings]) => {
+        if (!active) return;
+        setBackupRuns(runs);
+        setBackupSettings(
+          Object.fromEntries(settings.map((setting) => [setting.channelId, setting])),
+        );
+      })
+      .catch((caught: unknown) => {
+        if (active) setError(safeMessage(caught));
+      });
+    return () => {
+      active = false;
+    };
+  }, [section, channels]);
+
+  useEffect(() => {
+    if (section !== 'queue') return;
+    let active = true;
+    const refresh = (): void => {
+      void window.ytbm
+        .getQueueSnapshot({ section: queueSection, page: queuePage, pageSize: QUEUE_PAGE_SIZE })
+        .then((snapshot) => {
+          if (!active) return;
+          const lastPage = Math.max(1, Math.ceil(snapshot.totalItems / snapshot.pageSize));
+          if (snapshot.page > lastPage) setQueuePage(lastPage);
+          else setQueue(snapshot);
+        })
+        .catch((caught: unknown) => {
+          if (active) setError(safeMessage(caught));
+        });
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 1_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [section, queueSection, queuePage]);
 
   const selectedChannels = useMemo(
     () => channels.filter((channel) => channel.backupEnabled),
@@ -359,6 +477,105 @@ export function App() {
     }
   };
 
+  const addDestination = async (): Promise<void> => {
+    setBusy('add-destination');
+    setError(null);
+    try {
+      const destination = await window.ytbm.addFilesystemDestination();
+      if (destination === null) return;
+      setDestinations(await window.ytbm.listDestinations());
+      setNotice('Local backup destination added and probed successfully.');
+    } catch (caught) {
+      setError(safeMessage(caught));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const saveBackupSettings = async (
+    channelId: string,
+    qualityProfileOverride: QualityProfile | null,
+    destinationIds: string[],
+  ): Promise<void> => {
+    const previous = backupSettings[channelId];
+    if (previous === undefined) return;
+    setBackupSettings((current) => ({
+      ...current,
+      [channelId]: {
+        ...previous,
+        qualityProfileOverride,
+        effectiveQualityProfile:
+          qualityProfileOverride ??
+          foundation?.settings.defaultQualityProfile ??
+          previous.effectiveQualityProfile,
+        destinationIds,
+      },
+    }));
+    setBusy(`backup-settings:${channelId}`);
+    setError(null);
+    try {
+      const updated = await window.ytbm.updateChannelBackupSettings({
+        channelId,
+        qualityProfileOverride,
+        destinationIds,
+      });
+      setBackupSettings((current) => ({ ...current, [channelId]: updated }));
+    } catch (caught) {
+      setBackupSettings((current) => ({ ...current, [channelId]: previous }));
+      setError(safeMessage(caught));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const startBackup = async (channelId: string): Promise<void> => {
+    setBusy(`backup:${channelId}`);
+    setError(null);
+    try {
+      const result = await window.ytbm.startBackup(channelId);
+      setNotice(
+        `Backup started for ${result.run.discoveredCount} media. ${result.skippedVerifiedMedia} already verified; ${result.plannedJobs} recoverable processing steps will run automatically.`,
+      );
+      setBackupRuns(await window.ytbm.listBackupRuns());
+      setQueueSection('ACTIVE');
+      setQueuePage(1);
+      setSection('queue');
+    } catch (caught) {
+      setError(safeMessage(caught));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const showMediaDetails = async (mediaItemId: string): Promise<void> => {
+    try {
+      setMediaDetails(await window.ytbm.getMediaBackupDetails(mediaItemId));
+    } catch (caught) {
+      setError(safeMessage(caught));
+    }
+  };
+
+  const openVerifiedCopyFolder = async (
+    mediaCopyId: string,
+    mediaItemId: string,
+  ): Promise<void> => {
+    setError(null);
+    try {
+      const result = await window.ytbm.openVerifiedCopyFolder(mediaCopyId);
+      if (result.status === 'OPENED') return;
+      setError(result.safeMessage);
+      setMediaDetails(await window.ytbm.getMediaBackupDetails(mediaItemId));
+    } catch (caught) {
+      setError(safeMessage(caught));
+    }
+  };
+
+  const selectQueueSection = (nextSection: QueueSection): void => {
+    setQueue(null);
+    setQueueSection(nextSection);
+    setQueuePage(1);
+  };
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -366,7 +583,7 @@ export function App() {
           <span className="brand-mark">YT</span>
           <div>
             <strong>Backup Manager</strong>
-            <small>Read-only source catalog</small>
+            <small>Durable local archive</small>
           </div>
         </div>
         <nav aria-label="Main navigation">
@@ -394,7 +611,7 @@ export function App() {
       <main className="content">
         <header className="topbar">
           <div>
-            <p className="eyebrow">Source catalog</p>
+            <p className="eyebrow">YouTube Backup Manager</p>
             <h1>{NAVIGATION.find((item) => item.id === section)?.label}</h1>
           </div>
           <div className="topbar-meta">
@@ -633,13 +850,24 @@ export function App() {
                       ) : null}
                       <div className="channel-card-footer">
                         <span>Last sync: {formatDate(channel.lastSyncAt)}</span>
-                        <button
-                          className="button button--primary"
-                          disabled={displayedStatus === 'RUNNING' || displayedStatus === 'QUEUED'}
-                          onClick={() => void startSync(channel.id)}
-                        >
-                          Sync channel
-                        </button>
+                        <div className="section-actions">
+                          <button
+                            className="button button--secondary"
+                            disabled={displayedStatus === 'RUNNING' || displayedStatus === 'QUEUED'}
+                            onClick={() => void startSync(channel.id)}
+                          >
+                            Sync channel
+                          </button>
+                          <button
+                            className="button button--primary"
+                            disabled={busy !== null}
+                            onClick={() => {
+                              setSection('backup');
+                            }}
+                          >
+                            Backup now
+                          </button>
+                        </div>
                       </div>
                     </article>
                   );
@@ -732,7 +960,11 @@ export function App() {
             ) : libraryView === 'grid' ? (
               <div className="media-grid">
                 {library.items.map((media) => (
-                  <article className="media-card" key={media.id}>
+                  <article
+                    className="media-card"
+                    key={media.id}
+                    onClick={() => void showMediaDetails(media.id)}
+                  >
                     <div className="media-thumbnail">
                       <Thumbnail url={media.thumbnailUrl} alt={media.title} />
                       <StatePill>{media.mediaType}</StatePill>
@@ -768,7 +1000,12 @@ export function App() {
                   <span>Source</span>
                 </div>
                 {library.items.map((media) => (
-                  <div className="media-row" role="row" key={media.id}>
+                  <button
+                    className="media-row media-row--button"
+                    role="row"
+                    key={media.id}
+                    onClick={() => void showMediaDetails(media.id)}
+                  >
                     <div className="media-row-title">
                       <Thumbnail url={media.thumbnailUrl} alt={media.title} />
                       <span>
@@ -782,7 +1019,7 @@ export function App() {
                     <StatePill tone={media.sourceStatus === 'AVAILABLE' ? 'success' : 'neutral'}>
                       {media.sourceStatus}
                     </StatePill>
-                  </div>
+                  </button>
                 ))}
               </div>
             )}
@@ -901,6 +1138,596 @@ export function App() {
               </aside>
             </div>
           </section>
+        ) : null}
+
+        {busy !== 'startup' && section === 'storage' ? (
+          <section>
+            <div className="section-heading">
+              <div>
+                <h2>Local backup destinations</h2>
+                <p>Internal drives, external volumes, and normal Windows network paths.</p>
+              </div>
+            </div>
+            <div className="storage-add">
+              <button
+                className="button button--primary"
+                disabled={busy !== null}
+                onClick={() => void addDestination()}
+              >
+                Choose folder…
+              </button>
+            </div>
+            {foundation === null ? null : (
+              <div className="storage-add storage-add--settings">
+                <label>
+                  Global default quality
+                  <select
+                    value={foundation.settings.defaultQualityProfile}
+                    onChange={(event) => {
+                      void window.ytbm
+                        .updateDefaultQuality(event.currentTarget.value as QualityProfile)
+                        .then((settings) => {
+                          setFoundation((current) =>
+                            current === null ? current : { ...current, settings },
+                          );
+                        })
+                        .catch((caught: unknown) => setError(safeMessage(caught)));
+                    }}
+                  >
+                    {QUALITY_OPTIONS.map((profile) => (
+                      <option key={profile.value} value={profile.value}>
+                        {profile.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <small>Channels without an override use this profile.</small>
+              </div>
+            )}
+            {toolDiagnostics === null ? null : (
+              <div className="tool-diagnostics" aria-label="Managed tool diagnostics">
+                <div>
+                  <strong>yt-dlp</strong>
+                  <small>{toolDiagnostics.ytDlp.version ?? 'Unavailable'}</small>
+                  <StatePill tone={toolDiagnostics.ytDlp.available ? 'success' : 'danger'}>
+                    {toolDiagnostics.ytDlp.available ? 'Ready' : 'Unavailable'}
+                  </StatePill>
+                </div>
+                <div>
+                  <strong>FFmpeg</strong>
+                  <small>{toolDiagnostics.ffmpeg.version ?? 'Unavailable'}</small>
+                  <StatePill tone={toolDiagnostics.ffmpeg.available ? 'success' : 'danger'}>
+                    {toolDiagnostics.ffmpeg.available ? 'Ready' : 'Unavailable'}
+                  </StatePill>
+                </div>
+              </div>
+            )}
+            <div className="destination-list">
+              {destinations.length === 0 ? (
+                <EmptyState
+                  title="No local destinations"
+                  detail="Add a writable folder before starting the first media backup."
+                />
+              ) : (
+                destinations.map((destination) => (
+                  <article className="destination-card" key={destination.id}>
+                    <div>
+                      <h3>{destination.rootPath}</h3>
+                      <p>
+                        {destination.filesystemType ?? 'Filesystem'} ·{' '}
+                        {formatBytes(destination.availableBytes)} available
+                      </p>
+                      {destination.volumeSerial !== null ? (
+                        <small>Volume {destination.volumeSerial}</small>
+                      ) : null}
+                    </div>
+                    <StatePill
+                      tone={destination.availabilityStatus === 'AVAILABLE' ? 'success' : 'warning'}
+                    >
+                      {destination.availabilityStatus}
+                    </StatePill>
+                    <button
+                      className="button button--danger"
+                      onClick={() => {
+                        void window.ytbm.disableDestination(destination.id).then(async () => {
+                          setDestinations(await window.ytbm.listDestinations());
+                        });
+                      }}
+                    >
+                      Disable
+                    </button>
+                  </article>
+                ))
+              )}
+            </div>
+          </section>
+        ) : null}
+
+        {busy !== 'startup' && section === 'backup' ? (
+          <section>
+            <div className="section-heading">
+              <div>
+                <h2>Local backup</h2>
+                <p>Save per-channel destinations and quality, then plan a durable backup run.</p>
+              </div>
+            </div>
+            <div className="backup-channel-list">
+              {selectedChannels.map((channel) => {
+                const setting = backupSettings[channel.id];
+                if (setting === undefined) {
+                  return (
+                    <div className="loading-panel" key={channel.id}>
+                      Loading {channel.title} settings…
+                    </div>
+                  );
+                }
+                return (
+                  <article className="backup-channel-card" key={channel.id}>
+                    <div className="channel-identity">
+                      <Thumbnail url={channel.thumbnailUrl} alt={channel.title} />
+                      <div>
+                        <h3>{channel.title}</h3>
+                        <p>
+                          {channel.videosCount + channel.shortsCount + channel.liveCount} catalog
+                          media
+                        </p>
+                      </div>
+                    </div>
+                    <label>
+                      Quality
+                      <select
+                        disabled={busy !== null}
+                        value={setting.qualityProfileOverride ?? ''}
+                        onChange={(event) => {
+                          const profile = (event.currentTarget.value ||
+                            null) as QualityProfile | null;
+                          void saveBackupSettings(channel.id, profile, setting.destinationIds);
+                        }}
+                      >
+                        <option value="">Use global default</option>
+                        {QUALITY_OPTIONS.map((profile) => (
+                          <option key={profile.value} value={profile.value}>
+                            {profile.label}
+                          </option>
+                        ))}
+                      </select>
+                      <small>
+                        Effective:{' '}
+                        {
+                          QUALITY_OPTIONS.find(
+                            (profile) => profile.value === setting.effectiveQualityProfile,
+                          )?.label
+                        }
+                      </small>
+                    </label>
+                    <fieldset className="destination-picker">
+                      <legend>Destinations</legend>
+                      {destinations.filter((destination) => destination.enabled).length === 0 ? (
+                        <div className="destination-picker__empty">
+                          <span>Add a local destination before starting a backup.</span>
+                          <button
+                            className="button button--secondary"
+                            onClick={() => setSection('storage')}
+                          >
+                            Go to Storage
+                          </button>
+                        </div>
+                      ) : null}
+                      {destinations
+                        .filter((destination) => destination.enabled)
+                        .map((destination) => (
+                          <label key={destination.id}>
+                            <input
+                              type="checkbox"
+                              disabled={busy !== null}
+                              checked={setting.destinationIds.includes(destination.id)}
+                              onChange={(event) => {
+                                const next = event.currentTarget.checked
+                                  ? [...setting.destinationIds, destination.id]
+                                  : setting.destinationIds.filter((id) => id !== destination.id);
+                                void saveBackupSettings(
+                                  channel.id,
+                                  setting.qualityProfileOverride,
+                                  next,
+                                );
+                              }}
+                            />
+                            <span>{destination.rootPath}</span>
+                            <StatePill
+                              tone={
+                                destination.availabilityStatus === 'AVAILABLE'
+                                  ? 'success'
+                                  : 'warning'
+                              }
+                            >
+                              {destination.availabilityStatus}
+                            </StatePill>
+                          </label>
+                        ))}
+                    </fieldset>
+                    {busy === `backup-settings:${channel.id}` ? (
+                      <small className="backup-settings-status" aria-live="polite">
+                        Saving destination settings…
+                      </small>
+                    ) : null}
+                    <button
+                      className="button button--primary"
+                      disabled={setting.destinationIds.length === 0 || busy !== null}
+                      onClick={() => void startBackup(channel.id)}
+                    >
+                      Backup now
+                    </button>
+                  </article>
+                );
+              })}
+            </div>
+            <div className="section-heading section-heading--spaced">
+              <div>
+                <h2>Backup history</h2>
+                <p>Durable summaries remain separate from current queue details.</p>
+              </div>
+            </div>
+            <div className="run-list">
+              {backupRuns.length === 0 ? (
+                <EmptyState
+                  title="No backup history"
+                  detail="Start a local backup to create the first run."
+                />
+              ) : (
+                backupRuns.map((run) => (
+                  <article className="run-row" key={run.id}>
+                    <div>
+                      <strong>{run.channelTitle}</strong>
+                      <small>{formatDate(run.createdAt)}</small>
+                    </div>
+                    <StatePill
+                      tone={
+                        run.status === 'COMPLETED'
+                          ? 'success'
+                          : run.status === 'COMPLETED_WITH_ERRORS'
+                            ? 'warning'
+                            : 'neutral'
+                      }
+                    >
+                      {run.status.replaceAll('_', ' ')}
+                    </StatePill>
+                    <span>{run.downloadedCount} downloaded</span>
+                    <span>{run.localCopyCount} verified copies</span>
+                    <span>{formatBytes(run.bytesTransferred)}</span>
+                    {['RUNNING', 'PAUSED'].includes(run.status) ? (
+                      <button
+                        className="button button--secondary"
+                        onClick={() =>
+                          void window.ytbm.controlBackupRun(
+                            run.id,
+                            run.status === 'PAUSED' ? 'RESUME' : 'PAUSE',
+                          )
+                        }
+                      >
+                        {run.status === 'PAUSED' ? 'Resume' : 'Pause'}
+                      </button>
+                    ) : null}
+                  </article>
+                ))
+              )}
+            </div>
+          </section>
+        ) : null}
+
+        {busy !== 'startup' && section === 'queue' ? (
+          <section>
+            <div className="section-heading">
+              <div>
+                <h2>Backup activity</h2>
+                <p>
+                  Follow videos here. The advanced view exposes the smaller recoverable steps that
+                  make each backup resumable.
+                </p>
+              </div>
+            </div>
+            {queue === null ? (
+              <div className="loading-panel">Loading queue…</div>
+            ) : (
+              <>
+                <div className="queue-summary" aria-label="Queue filters">
+                  <button
+                    className={
+                      queueSection === 'ACTIVE'
+                        ? 'queue-filter queue-filter--active'
+                        : 'queue-filter'
+                    }
+                    aria-pressed={queueSection === 'ACTIVE'}
+                    onClick={() => selectQueueSection('ACTIVE')}
+                  >
+                    <strong>{queue.activeCount}</strong>
+                    <span>Active now</span>
+                  </button>
+                  <button
+                    className={
+                      queueSection === 'WAITING_DOWNLOADS'
+                        ? 'queue-filter queue-filter--active'
+                        : 'queue-filter'
+                    }
+                    aria-pressed={queueSection === 'WAITING_DOWNLOADS'}
+                    onClick={() => selectQueueSection('WAITING_DOWNLOADS')}
+                  >
+                    <strong>{queue.waitingDownloadCount}</strong>
+                    <span>Waiting to download</span>
+                  </button>
+                  <button
+                    className={
+                      queueSection === 'RETRYING'
+                        ? 'queue-filter queue-filter--active'
+                        : 'queue-filter'
+                    }
+                    aria-pressed={queueSection === 'RETRYING'}
+                    onClick={() => selectQueueSection('RETRYING')}
+                  >
+                    <strong>{queue.retryWaitingCount}</strong>
+                    <span>Retrying</span>
+                  </button>
+                  <button
+                    className={
+                      queueSection === 'PAUSED'
+                        ? 'queue-filter queue-filter--active'
+                        : 'queue-filter'
+                    }
+                    aria-pressed={queueSection === 'PAUSED'}
+                    onClick={() => selectQueueSection('PAUSED')}
+                  >
+                    <strong>{queue.pausedCount}</strong>
+                    <span>Paused</span>
+                  </button>
+                  <button
+                    className={
+                      queueSection === 'ATTENTION'
+                        ? 'queue-filter queue-filter--active'
+                        : 'queue-filter'
+                    }
+                    aria-pressed={queueSection === 'ATTENTION'}
+                    onClick={() => selectQueueSection('ATTENTION')}
+                  >
+                    <strong>{queue.failedCount + queue.blockedCount}</strong>
+                    <span>Needs attention</span>
+                  </button>
+                  <button
+                    className={
+                      queueSection === 'COMPLETED'
+                        ? 'queue-filter queue-filter--active'
+                        : 'queue-filter'
+                    }
+                    aria-pressed={queueSection === 'COMPLETED'}
+                    onClick={() => selectQueueSection('COMPLETED')}
+                  >
+                    <strong>{queue.completedMediaCount}</strong>
+                    <span>Backed up</span>
+                  </button>
+                  <button
+                    className={
+                      queueSection === 'ALL' ? 'queue-filter queue-filter--active' : 'queue-filter'
+                    }
+                    aria-pressed={queueSection === 'ALL'}
+                    title="Show every internal recovery step"
+                    onClick={() => selectQueueSection('ALL')}
+                  >
+                    <strong>{queue.totalJobCount}</strong>
+                    <span>All recovery steps</span>
+                  </button>
+                </div>
+                {queueSection === 'ALL' ? (
+                  <p className="queue-explanation">
+                    These are processing steps, not videos. A single video normally uses separate
+                    probe, download, processing, hash, verification, copy, metadata, thumbnail,
+                    manifest, and cleanup steps so interrupted work can resume safely.
+                  </p>
+                ) : null}
+                <div className="queue-list">
+                  {queue.jobs.length === 0 && queue.completedMedia.length === 0 ? (
+                    <EmptyState
+                      title={queue.totalJobCount === 0 ? 'Queue is empty' : 'Nothing in this view'}
+                      detail={
+                        queue.totalJobCount === 0
+                          ? 'Configure a channel and choose Backup now.'
+                          : 'Choose another filter to see the rest of the backup.'
+                      }
+                    />
+                  ) : queueSection === 'COMPLETED' ? (
+                    queue.completedMedia.map((media) => (
+                      <article className="queue-row queue-row--completed" key={media.mediaItemId}>
+                        <div>
+                          <strong>{media.mediaTitle}</strong>
+                          <small>
+                            Verified {formatDate(media.verifiedAt)} · {formatBytes(media.bytes)}
+                          </small>
+                          <small className="queue-destinations">
+                            {media.destinationPaths.join(' · ')}
+                          </small>
+                        </div>
+                        <StatePill tone="success">Backed up</StatePill>
+                        <div className="queue-completed-summary">
+                          <strong>
+                            {media.verifiedCopyCount} verified{' '}
+                            {media.verifiedCopyCount === 1 ? 'copy' : 'copies'}
+                          </strong>
+                          <small>Integrity check passed</small>
+                        </div>
+                        <div className="queue-actions">
+                          <button onClick={() => void showMediaDetails(media.mediaItemId)}>
+                            View details
+                          </button>
+                        </div>
+                      </article>
+                    ))
+                  ) : (
+                    queue.jobs.map((job) => (
+                      <article className="queue-row" key={job.id}>
+                        <div>
+                          <strong>{job.mediaTitle ?? job.jobType.replaceAll('_', ' ')}</strong>
+                          <small>
+                            {job.jobType.replaceAll('_', ' ')}
+                            {job.destinationPath === null ? '' : ` · ${job.destinationPath}`}
+                          </small>
+                        </div>
+                        <StatePill
+                          tone={
+                            job.status === 'FAILED'
+                              ? 'danger'
+                              : job.status === 'BLOCKED' || job.status === 'RETRY_WAIT'
+                                ? 'warning'
+                                : job.status === 'COMPLETED'
+                                  ? 'success'
+                                  : 'neutral'
+                          }
+                        >
+                          {queueStatusLabel(job.status)}
+                        </StatePill>
+                        <div className="queue-progress">
+                          <div className="progress">
+                            <span
+                              style={{ width: `${Math.round((job.progressRatio ?? 0) * 100)}%` }}
+                            />
+                          </div>
+                          <small>
+                            {formatBytes(job.bytesProcessed)} / {formatBytes(job.bytesTotal)}
+                            {job.speedBytesPerSec === null
+                              ? ''
+                              : ` · ${formatBytes(job.speedBytesPerSec)}/s`}
+                            {job.etaSeconds === null ? '' : ` · ${job.etaSeconds}s ETA`}
+                          </small>
+                          {job.safeMessage === null ? null : (
+                            <small className="card-error">{job.safeMessage}</small>
+                          )}
+                        </div>
+                        <div className="queue-actions">
+                          {['RUNNING', 'READY', 'PENDING'].includes(job.status) ? (
+                            <button onClick={() => void window.ytbm.controlJob(job.id, 'PAUSE')}>
+                              Pause
+                            </button>
+                          ) : null}
+                          {job.status === 'PAUSED' ? (
+                            <button onClick={() => void window.ytbm.controlJob(job.id, 'RESUME')}>
+                              Resume
+                            </button>
+                          ) : null}
+                          {[
+                            'PENDING',
+                            'READY',
+                            'RUNNING',
+                            'PAUSED',
+                            'RETRY_WAIT',
+                            'BLOCKED',
+                          ].includes(job.status) ? (
+                            <button
+                              onClick={() => {
+                                const removePartial = window.confirm(
+                                  'Remove resumable partial data? Choose Cancel to preserve it.',
+                                );
+                                void window.ytbm.controlJob(
+                                  job.id,
+                                  removePartial ? 'CANCEL_REMOVE_PARTIAL' : 'CANCEL_KEEP_PARTIAL',
+                                );
+                              }}
+                            >
+                              Cancel
+                            </button>
+                          ) : null}
+                          {['PENDING', 'READY', 'PAUSED'].includes(job.status) ? (
+                            <button onClick={() => void window.ytbm.controlJob(job.id, 'MOVE_TOP')}>
+                              Move to top
+                            </button>
+                          ) : null}
+                          {['PENDING', 'READY', 'PAUSED'].includes(job.status) ? (
+                            <>
+                              <button
+                                onClick={() => void window.ytbm.controlJob(job.id, 'PRIORITY_UP')}
+                              >
+                                Priority +
+                              </button>
+                              <button
+                                onClick={() => void window.ytbm.controlJob(job.id, 'PRIORITY_DOWN')}
+                              >
+                                Priority −
+                              </button>
+                            </>
+                          ) : null}
+                        </div>
+                      </article>
+                    ))
+                  )}
+                </div>
+                <Pager
+                  page={queue.page}
+                  pageSize={queue.pageSize}
+                  total={queue.totalItems}
+                  onPage={(page) => {
+                    setQueue(null);
+                    setQueuePage(page);
+                  }}
+                />
+              </>
+            )}
+          </section>
+        ) : null}
+
+        {mediaDetails !== null ? (
+          <div className="modal-backdrop" role="presentation" onClick={() => setMediaDetails(null)}>
+            <section
+              className="media-detail-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Backup details"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <button
+                className="modal-close"
+                onClick={() => setMediaDetails(null)}
+                aria-label="Close backup details"
+              >
+                ×
+              </button>
+              <p className="eyebrow">Local backup details</p>
+              <h2>{mediaDetails.title}</h2>
+              {mediaDetails.copies.length === 0 ? (
+                <EmptyState
+                  title="Local: Missing"
+                  detail="No local copy has been planned for this media yet."
+                />
+              ) : (
+                mediaDetails.copies.map((copy) => (
+                  <article className="copy-detail" key={copy.id}>
+                    <div>
+                      <strong>
+                        Local:{' '}
+                        {copy.availabilityStatus === 'DISCONNECTED' && copy.status === 'VERIFIED'
+                          ? 'Disconnected'
+                          : copy.status}
+                      </strong>
+                      <p>
+                        {copy.destinationPath}
+                        {copy.relativePath === null ? '' : `\\${copy.relativePath}`}
+                      </p>
+                      <small>
+                        {formatBytes(copy.bytes)} ·{' '}
+                        {copy.height === null ? 'Resolution unknown' : `${copy.height}p`} ·{' '}
+                        {copy.qualityProfile ?? 'Quality pending'}
+                      </small>
+                      {copy.sha256 === null ? null : <code>{copy.sha256.slice(0, 16)}…</code>}
+                    </div>
+                    {copy.status === 'VERIFIED' && copy.availabilityStatus === 'AVAILABLE' ? (
+                      <button
+                        className="button button--secondary"
+                        onClick={() =>
+                          void openVerifiedCopyFolder(copy.id, mediaDetails.mediaItemId)
+                        }
+                      >
+                        Open folder
+                      </button>
+                    ) : null}
+                  </article>
+                ))
+              )}
+            </section>
+          </div>
         ) : null}
       </main>
     </div>

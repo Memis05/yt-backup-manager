@@ -70,11 +70,60 @@ export const VerificationResultSchema = z.enum([
   'UNAVAILABLE',
   'ERROR',
 ]);
-export const QualityProfileSchema = z.enum([
-  'BEST_AVAILABLE',
-  'UP_TO_4K',
-  'UP_TO_1080P',
-  'UP_TO_720P',
+export const QualityProfileSchema = z.enum(['BEST_AVAILABLE', 'MAX_4K', 'MAX_1080P', 'MAX_720P']);
+export const JobTypeSchema = z.enum([
+  'CHANNEL_SYNC',
+  'FORMAT_PROBE',
+  'DOWNLOAD_MEDIA',
+  'DOWNLOAD_THUMBNAIL',
+  'POST_PROCESS_MEDIA',
+  'HASH_STAGING_MEDIA',
+  'VERIFY_STAGING_MEDIA',
+  'WRITE_STAGING_METADATA',
+  'COPY_TO_FILESYSTEM',
+  'VERIFY_FILESYSTEM_COPY',
+  'WRITE_DESTINATION_METADATA',
+  'UPDATE_MANIFEST',
+  'CLEANUP_STAGING',
+]);
+export const StagingStateSchema = z.enum([
+  'PARTIAL',
+  'DOWNLOADED',
+  'POST_PROCESSED',
+  'HASHED',
+  'VERIFIED',
+  'DISTRIBUTING',
+  'CLEANUP_PENDING',
+]);
+export const BackupErrorCodeSchema = z.enum([
+  'NETWORK_TIMEOUT',
+  'NETWORK_UNAVAILABLE',
+  'RATE_LIMITED',
+  'PROVIDER_5XX',
+  'AUTH_EXPIRED',
+  'AUTH_REFRESH_FAILED',
+  'AUTH_REVOKED',
+  'YOUTUBE_SESSION_REQUIRED',
+  'YOUTUBE_SESSION_INVALID',
+  'SOURCE_REMOVED',
+  'SOURCE_UNAVAILABLE',
+  'FORMAT_UNAVAILABLE',
+  'DESTINATION_DISCONNECTED',
+  'DESTINATION_READ_ONLY',
+  'DESTINATION_FULL',
+  'DESTINATION_PERMISSION_DENIED',
+  'STAGING_UNAVAILABLE',
+  'DOWNLOAD_FAILED',
+  'FFMPEG_FAILED',
+  'HASH_FAILED',
+  'COPY_FAILED',
+  'VERIFY_FAILED',
+  'COPY_MISSING',
+  'COPY_CORRUPT',
+  'MANIFEST_INVALID',
+  'MANIFEST_WRITE_FAILED',
+  'DATABASE_ERROR',
+  'INTERNAL_ERROR',
 ]);
 export const AccountConnectionStateSchema = z.enum([
   'CONNECTED',
@@ -117,6 +166,9 @@ export type BackupRunStatus = z.infer<typeof BackupRunStatusSchema>;
 export type JobStatus = z.infer<typeof JobStatusSchema>;
 export type VerificationResult = z.infer<typeof VerificationResultSchema>;
 export type QualityProfile = z.infer<typeof QualityProfileSchema>;
+export type JobType = z.infer<typeof JobTypeSchema>;
+export type StagingState = z.infer<typeof StagingStateSchema>;
+export type BackupErrorCode = z.infer<typeof BackupErrorCodeSchema>;
 export type AccountConnectionState = z.infer<typeof AccountConnectionStateSchema>;
 export type OAuthFlowStatus = z.infer<typeof OAuthFlowStatusSchema>;
 export type SourceSyncStatus = z.infer<typeof SourceSyncStatusSchema>;
