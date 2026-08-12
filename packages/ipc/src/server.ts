@@ -10,7 +10,7 @@ import {
   type ParsedWorkerRpcRequest,
   type RpcErrorCode,
   type WorkerRpcMethod,
-  type WorkerRpcParams,
+  type WorkerRpcParsedParams,
   type WorkerRpcResult,
 } from './contracts';
 
@@ -18,7 +18,7 @@ const MAX_MESSAGE_BYTES = 64 * 1024;
 
 export type WorkerRpcHandlers = {
   [Method in WorkerRpcMethod]: (
-    params: WorkerRpcParams<Method>,
+    params: WorkerRpcParsedParams<Method>,
   ) => Promise<WorkerRpcResult<Method>> | WorkerRpcResult<Method>;
 };
 

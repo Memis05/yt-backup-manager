@@ -9,6 +9,10 @@ const SENSITIVE_KEYS = new Set([
   'clientsecret',
   'oauthsecret',
   'authcode',
+  'authorizationcode',
+  'code',
+  'codeverifier',
+  'idtoken',
   'password',
   'passphrase',
   'sessiontoken',
@@ -34,7 +38,11 @@ export function redactString(value: string): string {
   return value
     .replaceAll(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, `Bearer ${REDACTED}`)
     .replaceAll(
-      /([?&](?:access_token|refresh_token|code|client_secret|x-goog-signature)=)[^&#\s]+/gi,
+      /([?&](?:access_token|refresh_token|id_token|code|code_verifier|state|client_secret|x-goog-signature)=)[^&#\s]+/gi,
+      `$1${REDACTED}`,
+    )
+    .replaceAll(
+      /\b((?:access_token|refresh_token|id_token|code|code_verifier|client_secret)=)[^&\s]+/gi,
       `$1${REDACTED}`,
     )
     .replaceAll(/\b(?:eyJ[A-Za-z0-9_-]+)\.(?:[A-Za-z0-9_-]+)\.(?:[A-Za-z0-9_-]+)\b/g, REDACTED);

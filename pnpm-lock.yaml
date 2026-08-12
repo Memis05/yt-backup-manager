@@ -119,6 +119,9 @@ importers:
       '@ytbm/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@ytbm/source-youtube':
+        specifier: workspace:*
+        version: link:../../packages/source-youtube
       better-sqlite3:
         specifier: 'catalog:'
         version: 13.0.3
@@ -174,6 +177,9 @@ importers:
       '@ytbm/core':
         specifier: workspace:*
         version: link:../core
+      '@ytbm/source-youtube':
+        specifier: workspace:*
+        version: link:../source-youtube
       better-sqlite3:
         specifier: 'catalog:'
         version: 13.0.3
@@ -209,6 +215,18 @@ importers:
   packages/security: {}
 
   packages/shared: {}
+
+  packages/source-youtube:
+    dependencies:
+      '@ytbm/core':
+        specifier: workspace:*
+        version: link:../core
+      '@ytbm/security':
+        specifier: workspace:*
+        version: link:../security
+      zod:
+        specifier: 'catalog:'
+        version: 4.4.3
 
 packages:
 

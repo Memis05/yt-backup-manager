@@ -17,6 +17,22 @@ export function isAllowedExternalUrl(value: string): boolean {
   }
 }
 
+export function isAllowedGoogleOAuthUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === 'https:' &&
+      url.hostname === 'accounts.google.com' &&
+      url.pathname === '/o/oauth2/v2/auth' &&
+      url.searchParams.get('response_type') === 'code' &&
+      url.searchParams.get('code_challenge_method') === 'S256' &&
+      url.searchParams.has('state')
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function secureWebContentsNavigation(webContents: WebContents): void {
   webContents.on('will-navigate', (event, url) => {
     if (url !== webContents.getURL()) event.preventDefault();

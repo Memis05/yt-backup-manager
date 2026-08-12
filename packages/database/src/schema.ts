@@ -26,6 +26,7 @@ export const accounts = sqliteTable(
     avatarUrl: text('avatar_url'),
     credentialRef: text('credential_ref').notNull(),
     capabilitiesJson: text('capabilities_json').notNull().default('{}'),
+    connectionState: text('connection_state').notNull().default('CONNECTED'),
     connectedAt: integer('connected_at').notNull(),
     lastAuthAt: integer('last_auth_at'),
     lastErrorCode: text('last_error_code'),
@@ -74,7 +75,10 @@ export const accountChannels = sqliteTable(
     relationshipMetadataJson: text('relationship_metadata_json').notNull().default('{}'),
     createdAt: integer('created_at').notNull(),
   },
-  (table) => [primaryKey({ columns: [table.accountId, table.channelId] })],
+  (table) => [
+    primaryKey({ columns: [table.accountId, table.channelId] }),
+    index('account_channels_channel_idx').on(table.channelId),
+  ],
 );
 
 export const mediaItems = sqliteTable(

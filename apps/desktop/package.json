@@ -19,6 +19,7 @@
     "@ytbm/job-engine": "workspace:*",
     "@ytbm/security": "workspace:*",
     "@ytbm/shared": "workspace:*",
+    "@ytbm/source-youtube": "workspace:*",
     "better-sqlite3": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",

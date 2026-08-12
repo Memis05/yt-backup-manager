@@ -10,7 +10,10 @@ import {
 } from '@ytbm/core';
 import {
   DatabaseHealthService,
+  DrizzleGoogleAccountRepository,
   DrizzleSettingsRepository,
+  SourceCatalogService,
+  SourceSyncCoordinator,
   acquireWorkerDatabaseOwnership,
   openWorkerDatabase,
   type WorkerDatabase,
@@ -25,6 +28,11 @@ import {
   type EncryptionAdapter,
   type LogSink,
 } from '@ytbm/security';
+import {
+  GoogleAccountService,
+  YouTubeApiClient,
+  YouTubeSourceProvider,
+} from '@ytbm/source-youtube';
 
 import type { RuntimeConfig } from '../config/runtime';
 
@@ -46,6 +54,8 @@ export class WorkerRuntime {
   private readonly singleton: NamedPipeWorkerSingleton;
   private rpcServer: WorkerRpcServer | null = null;
   private database: WorkerDatabase | null = null;
+  private googleAccounts: GoogleAccountService | null = null;
+  private sourceSync: SourceSyncCoordinator | null = null;
 
   public constructor(private readonly options: WorkerRuntimeOptions) {
     this.now = options.now ?? Date.now;
@@ -78,10 +88,49 @@ export class WorkerRuntime {
         this.options.config.paths.credentials,
         this.options.encryption,
       );
-      void credentials;
       this.logger.info('Secure credential store initialized', {
         encryptionAvailable: this.options.encryption.isEncryptionAvailable(),
       });
+      const accountRepository = new DrizzleGoogleAccountRepository(this.database);
+      const catalog = new SourceCatalogService(this.database, this.now);
+      const youtubeProviderReference: { current: YouTubeSourceProvider | null } = {
+        current: null,
+      };
+      this.googleAccounts = new GoogleAccountService(
+        {
+          clientId: this.options.config.googleOAuthClientId,
+          clientSecret: this.options.config.googleOAuthClientSecret,
+          onDiagnostic: (diagnostic) => {
+            this.logger.error('Google OAuth callback failed', { ...diagnostic });
+          },
+        },
+        accountRepository,
+        credentials,
+        fetch,
+        this.now,
+        async (account) => {
+          const discovered = await youtubeProviderReference.current?.listChannels(account.id);
+          if (discovered === undefined) return;
+          await catalog.discoverChannels(account.id, discovered);
+        },
+      );
+      const youtubeApi = new YouTubeApiClient(this.googleAccounts);
+      const youtubeProvider = new YouTubeSourceProvider(youtubeApi);
+      youtubeProviderReference.current = youtubeProvider;
+      this.sourceSync = new SourceSyncCoordinator(
+        this.instanceId,
+        catalog,
+        youtubeProvider,
+        this.now,
+        async (accountId) => {
+          await accountRepository.setAccountConnectionState(
+            accountId,
+            'REAUTH_REQUIRED',
+            'AUTH_REVOKED',
+            this.now(),
+          );
+        },
+      );
 
       const endpoints = createUserScopedEndpoints(this.options.config.paths.runtime);
       const authToken = await new RpcAuthTokenStore(
@@ -94,7 +143,13 @@ export class WorkerRuntime {
           return { accepted: true };
         },
         'worker.shutdownIfIdle': () => {
-          if (this.options.onShutdownRequested === undefined) return { accepted: false };
+          if (
+            this.options.onShutdownRequested === undefined ||
+            this.sourceSync?.isIdle() === false ||
+            this.googleAccounts?.isIdle() === false
+          ) {
+            return { accepted: false };
+          }
           this.logger.info('Idle worker shutdown requested');
           setTimeout(this.options.onShutdownRequested, 50);
           return { accepted: true };
@@ -103,9 +158,31 @@ export class WorkerRuntime {
         'database.health': () => databaseHealth.getHealth(),
         'settings.get': () => settings.get(),
         'settings.update': (patch) => settings.update(patch),
+        'accounts.oauthBegin': ({ accountId }) => this.googleAccounts!.beginConnection(accountId),
+        'accounts.oauthConfigure': ({ clientId, clientSecret }) => ({
+          configured: this.googleAccounts!.configureClientCredentials(clientId, clientSecret),
+        }),
+        'accounts.oauthStatus': ({ flowId }) => this.googleAccounts!.getFlowStatus(flowId),
+        'accounts.list': async () => ({ accounts: await this.googleAccounts!.listAccounts() }),
+        'accounts.disconnect': ({ accountId }) => this.googleAccounts!.disconnect(accountId),
+        'channels.discover': async ({ accountId }) => {
+          const discovered = await youtubeProvider.listChannels(accountId);
+          return { channels: await catalog.discoverChannels(accountId, discovered) };
+        },
+        'channels.list': async ({ accountId, selectedOnly }) => ({
+          channels: await catalog.listChannels({ accountId, selectedOnly }),
+        }),
+        'channels.setEnabled': ({ channelId, enabled }) =>
+          catalog.setChannelEnabled(channelId, enabled),
+        'sync.start': ({ channelId }) => this.sourceSync!.start(channelId),
+        'sync.status': ({ syncId }) => this.sourceSync!.status(syncId),
+        'library.query': (query) => catalog.queryLibrary(query),
+        'playlists.query': (query) => catalog.queryPlaylists(query),
+        'playlists.members': (query) => catalog.queryPlaylistMembers(query),
       };
       this.rpcServer = new WorkerRpcServer(endpoints.rpc, authToken, handlers);
       await this.rpcServer.start();
+      this.sourceSync.resumePending();
       this.logger.info('Worker ready', { mode: this.options.mode });
       return true;
     } catch (error) {
@@ -119,6 +196,10 @@ export class WorkerRuntime {
   public async stop(): Promise<void> {
     await this.rpcServer?.stop();
     this.rpcServer = null;
+    await this.sourceSync?.stop();
+    this.sourceSync = null;
+    await this.googleAccounts?.stop();
+    this.googleAccounts = null;
     this.database?.close();
     this.database = null;
     await this.singleton.release();

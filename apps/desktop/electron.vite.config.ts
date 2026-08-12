@@ -15,6 +15,7 @@ export default defineConfig({
           '@ytbm/job-engine',
           '@ytbm/security',
           '@ytbm/shared',
+          '@ytbm/source-youtube',
         ],
       }),
     ],
