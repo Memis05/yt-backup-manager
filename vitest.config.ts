@@ -1,0 +1,48 @@
+import { resolve } from 'node:path';
+
+import { defineConfig } from 'vitest/config';
+
+const common = {
+  globals: false,
+  environment: 'node' as const,
+  restoreMocks: true,
+  clearMocks: true,
+};
+
+export default defineConfig({
+  resolve: {
+    alias: {
+      '@ytbm/core': resolve(import.meta.dirname, 'packages/core/src/index.ts'),
+      '@ytbm/database/worker': resolve(import.meta.dirname, 'packages/database/src/index.ts'),
+      '@ytbm/ipc': resolve(import.meta.dirname, 'packages/ipc/src/index.ts'),
+      '@ytbm/job-engine': resolve(import.meta.dirname, 'packages/job-engine/src/index.ts'),
+      '@ytbm/security': resolve(import.meta.dirname, 'packages/security/src/index.ts'),
+      '@ytbm/shared': resolve(import.meta.dirname, 'packages/shared/src/index.ts'),
+      '@ytbm/source-youtube': resolve(import.meta.dirname, 'packages/source-youtube/src/index.ts'),
+    },
+  },
+  test: {
+    projects: [
+      {
+        extends: true,
+        test: {
+          ...common,
+          name: 'unit',
+          include: ['packages/**/*.test.ts', 'apps/**/*.test.ts'],
+          exclude: ['**/node_modules/**', '**/dist/**', '**/out/**', '**/*.integration.test.ts'],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          ...common,
+          name: 'integration',
+          include: ['packages/**/*.integration.test.ts', 'apps/**/*.integration.test.ts'],
+          exclude: ['**/node_modules/**', '**/dist/**', '**/out/**'],
+          testTimeout: 15_000,
+          hookTimeout: 15_000,
+        },
+      },
+    ],
+  },
+});

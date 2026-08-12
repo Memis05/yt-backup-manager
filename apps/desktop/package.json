@@ -1,0 +1,63 @@
+{
+  "name": "@ytbm/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first YouTube backup manager for Windows",
+  "author": "YouTube Backup Manager contributors",
+  "type": "module",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build && node ../../scripts/copy-database-migrations.mjs",
+    "typecheck": "tsc --noEmit",
+    "package:dir": "electron-builder --dir"
+  },
+  "dependencies": {
+    "@ytbm/core": "workspace:*",
+    "@ytbm/database": "workspace:*",
+    "@ytbm/ipc": "workspace:*",
+    "@ytbm/job-engine": "workspace:*",
+    "@ytbm/security": "workspace:*",
+    "@ytbm/shared": "workspace:*",
+    "@ytbm/source-youtube": "workspace:*",
+    "better-sqlite3": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@vitejs/plugin-react": "catalog:",
+    "electron": "catalog:",
+    "electron-builder": "catalog:",
+    "electron-vite": "catalog:",
+    "tailwindcss": "catalog:",
+    "vite": "catalog:"
+  },
+  "build": {
+    "appId": "com.youtubebackupmanager.desktop",
+    "productName": "YouTube Backup Manager",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    }
+  }
+}

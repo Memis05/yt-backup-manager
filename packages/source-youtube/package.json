@@ -1,0 +1,23 @@
+{
+  "name": "@ytbm/source-youtube",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ytbm/core": "workspace:*",
+    "@ytbm/security": "workspace:*",
+    "zod": "catalog:"
+  }
+}
