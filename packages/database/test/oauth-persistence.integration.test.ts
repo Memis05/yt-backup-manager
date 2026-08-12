@@ -27,6 +27,61 @@ afterEach(async () => {
 });
 
 describe('OAuth persistence boundary', () => {
+  it('keeps YouTube and Drive connection state independent', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ytbm-oauth-capabilities-'));
+    directories.push(directory);
+    const database = openWorkerDatabase({
+      databasePath: join(directory, 'app.db'),
+      ownership: acquireWorkerDatabaseOwnership(),
+      migrationsFolder,
+    });
+    databases.push(database);
+    const accounts = new DrizzleGoogleAccountRepository(database);
+    const account = await accounts.upsertConnectedAccount({
+      providerAccountId: 'independent-subject',
+      email: 'independent@example.test',
+      displayName: null,
+      avatarUrl: null,
+      credentialRef: 'google-oauth:youtube',
+      grantedScopes: ['https://www.googleapis.com/auth/youtube.readonly'],
+      capability: 'YOUTUBE',
+      connectedAt: 1,
+    });
+    await accounts.setAccountConnectionState(account.id, 'REAUTH_REQUIRED', 'AUTH_REVOKED', 2);
+    await accounts.upsertConnectedAccount({
+      providerAccountId: 'independent-subject',
+      email: 'independent@example.test',
+      displayName: null,
+      avatarUrl: null,
+      credentialRef: 'google-oauth:drive',
+      grantedScopes: [
+        'https://www.googleapis.com/auth/youtube.readonly',
+        'https://www.googleapis.com/auth/drive.file',
+      ],
+      capability: 'GOOGLE_DRIVE',
+      connectedAt: 3,
+    });
+
+    await expect(accounts.listAccounts()).resolves.toEqual([
+      expect.objectContaining({
+        connectionState: 'REAUTH_REQUIRED',
+        lastErrorCode: 'AUTH_REVOKED',
+        capabilities: expect.objectContaining({
+          driveFile: true,
+          driveConnectionState: 'CONNECTED',
+        }),
+      }),
+    ]);
+    await accounts.setDriveCapabilityState(account.id, 'REAUTH_REQUIRED', 'AUTH_REVOKED', 4);
+    await expect(accounts.listAccounts()).resolves.toEqual([
+      expect.objectContaining({
+        connectionState: 'REAUTH_REQUIRED',
+        lastErrorCode: 'AUTH_REVOKED',
+        capabilities: expect.objectContaining({ driveConnectionState: 'REAUTH_REQUIRED' }),
+      }),
+    ]);
+  });
+
   it('stores credential references in SQLite while tokens remain in the credential store', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'ytbm-oauth-database-'));
     directories.push(directory);

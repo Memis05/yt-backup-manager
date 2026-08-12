@@ -25,6 +25,7 @@ export const accounts = sqliteTable(
     displayName: text('display_name'),
     avatarUrl: text('avatar_url'),
     credentialRef: text('credential_ref').notNull(),
+    driveCredentialRef: text('drive_credential_ref'),
     capabilitiesJson: text('capabilities_json').notNull().default('{}'),
     connectionState: text('connection_state').notNull().default('CONNECTED'),
     connectedAt: integer('connected_at').notNull(),
@@ -308,6 +309,8 @@ export const mediaCopies = sqliteTable(
     sha256: text('sha256'),
     qualityProfile: text('quality_profile'),
     contentGeneration: text('content_generation'),
+    verificationStrength: text('verification_strength'),
+    providerMetadataJson: text('provider_metadata_json'),
     status: text('status').notNull().default('PENDING'),
     verifiedAt: integer('verified_at'),
     lastCheckedAt: integer('last_checked_at'),
@@ -444,6 +447,54 @@ export const stagingArtifacts = sqliteTable('staging_artifacts', {
   generation: text('generation'),
   ...timestamps(),
 });
+
+export const providerObjects = sqliteTable(
+  'provider_objects',
+  {
+    id: text('id').primaryKey(),
+    destinationId: text('destination_id')
+      .notNull()
+      .references(() => destinations.id, { onDelete: 'cascade' }),
+    logicalKey: text('logical_key').notNull(),
+    objectType: text('object_type').notNull(),
+    providerObjectId: text('provider_object_id').notNull(),
+    parentProviderObjectId: text('parent_provider_object_id'),
+    currentName: text('current_name').notNull(),
+    ...timestamps(),
+  },
+  (table) => [
+    uniqueIndex('provider_objects_destination_key_uidx').on(table.destinationId, table.logicalKey),
+    index('provider_objects_provider_id_idx').on(table.providerObjectId),
+  ],
+);
+
+export const driveUploadSessions = sqliteTable(
+  'drive_upload_sessions',
+  {
+    jobId: text('job_id')
+      .primaryKey()
+      .references(() => jobs.id, { onDelete: 'cascade' }),
+    destinationId: text('destination_id')
+      .notNull()
+      .references(() => destinations.id, { onDelete: 'cascade' }),
+    mediaCopyId: text('media_copy_id')
+      .notNull()
+      .references(() => mediaCopies.id, { onDelete: 'cascade' }),
+    parentProviderObjectId: text('parent_provider_object_id').notNull(),
+    sessionUri: text('session_uri').notNull(),
+    providerFileId: text('provider_file_id'),
+    bytesAcknowledged: integer('bytes_acknowledged').notNull().default(0),
+    expectedBytes: integer('expected_bytes').notNull(),
+    expectedSha256: text('expected_sha256').notNull(),
+    sourceReferenceJson: text('source_reference_json').notNull(),
+    startedAt: integer('started_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [
+    index('drive_upload_sessions_destination_idx').on(table.destinationId),
+    index('drive_upload_sessions_copy_idx').on(table.mediaCopyId),
+  ],
+);
 
 export const integrityChecks = sqliteTable(
   'integrity_checks',

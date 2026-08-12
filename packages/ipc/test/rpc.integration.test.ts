@@ -67,6 +67,7 @@ const handlers: WorkerRpcHandlers = {
   }),
   'accounts.oauthStatus': ({ flowId }) => ({
     flowId,
+    capability: 'YOUTUBE',
     status: 'EXPIRED',
     expiresAt: 1,
     account: null,
@@ -82,7 +83,12 @@ const handlers: WorkerRpcHandlers = {
     displayName: 'Owner',
     avatarUrl: null,
     connectionState: 'DISCONNECTED',
-    capabilities: { youtubeReadonly: true, grantedScopes: [] },
+    capabilities: {
+      youtubeReadonly: true,
+      driveFile: false,
+      driveConnectionState: 'AUTHORIZATION_REQUIRED',
+      grantedScopes: [],
+    },
     connectedAt: 1,
     lastAuthAt: 1,
     lastErrorCode: null,
@@ -133,6 +139,7 @@ const handlers: WorkerRpcHandlers = {
   'playlists.query': ({ page, pageSize }) => ({ items: [], total: 0, page, pageSize }),
   'playlists.members': ({ page, pageSize }) => ({ items: [], total: 0, page, pageSize }),
   'destinations.addFilesystem': unimplemented,
+  'destinations.addGoogleDrive': unimplemented,
   'destinations.list': unimplemented,
   'destinations.disable': unimplemented,
   'backup.channelSettings': unimplemented,
@@ -144,6 +151,8 @@ const handlers: WorkerRpcHandlers = {
   'jobs.control': unimplemented,
   'media.backupDetails': unimplemented,
   'media.resolveVerifiedFolder': unimplemented,
+  'storage.resolveGoogleDriveObject': unimplemented,
+  'dashboard.summary': unimplemented,
   'tools.diagnostics': unimplemented,
 };
 

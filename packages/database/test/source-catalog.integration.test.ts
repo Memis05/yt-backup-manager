@@ -111,6 +111,7 @@ describe('worker-owned source catalog', () => {
       avatarUrl: null,
       credentialRef: 'google-oauth:one',
       grantedScopes: ['https://www.googleapis.com/auth/youtube.readonly'],
+      capability: 'YOUTUBE',
       connectedAt: now,
     });
     const accountTwo = await accounts.upsertConnectedAccount({
@@ -120,6 +121,7 @@ describe('worker-owned source catalog', () => {
       avatarUrl: null,
       credentialRef: 'google-oauth:two',
       grantedScopes: ['https://www.googleapis.com/auth/youtube.readonly'],
+      capability: 'YOUTUBE',
       connectedAt: now,
     });
     const channelRecord = {
@@ -317,6 +319,7 @@ describe('worker-owned source catalog', () => {
       avatarUrl: null,
       credentialRef: 'google-oauth:partial',
       grantedScopes: ['https://www.googleapis.com/auth/youtube.readonly'],
+      capability: 'YOUTUBE',
       connectedAt: now,
     });
     const [channel] = await catalog.discoverChannels(account.id, [

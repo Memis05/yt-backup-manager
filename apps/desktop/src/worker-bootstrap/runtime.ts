@@ -33,6 +33,7 @@ import {
   YouTubeApiClient,
   YouTubeSourceProvider,
 } from '@ytbm/source-youtube';
+import { GoogleDriveStorageProvider } from '@ytbm/storage-google-drive';
 
 import type { RuntimeConfig } from '../config/runtime';
 import { LocalBackupRuntime } from './backup-runtime';
@@ -145,6 +146,12 @@ export class WorkerRuntime {
         logger: this.logger,
         settings: () => settings.get(),
         now: this.now,
+        googleDriveStorage: new GoogleDriveStorageProvider({
+          getAccessToken: (accountId, forceRefresh) =>
+            this.googleAccounts!.getAccessToken(accountId, forceRefresh, 'GOOGLE_DRIVE'),
+          markDriveAuthorizationInvalid: (accountId) =>
+            this.googleAccounts!.markDriveAuthorizationInvalid(accountId),
+        }),
       });
 
       const endpoints = createUserScopedEndpoints(this.options.config.paths.runtime);
@@ -174,7 +181,8 @@ export class WorkerRuntime {
         'database.health': () => databaseHealth.getHealth(),
         'settings.get': () => settings.get(),
         'settings.update': (patch) => settings.update(patch),
-        'accounts.oauthBegin': ({ accountId }) => this.googleAccounts!.beginConnection(accountId),
+        'accounts.oauthBegin': ({ accountId, capability }) =>
+          this.googleAccounts!.beginConnection(accountId, capability),
         'accounts.oauthConfigure': ({ clientId, clientSecret }) => ({
           configured: this.googleAccounts!.configureClientCredentials(clientId, clientSecret),
         }),
@@ -196,6 +204,8 @@ export class WorkerRuntime {
         'playlists.query': (query) => catalog.queryPlaylists(query),
         'playlists.members': (query) => catalog.queryPlaylistMembers(query),
         'destinations.addFilesystem': ({ rootPath }) => this.localBackup!.addDestination(rootPath),
+        'destinations.addGoogleDrive': ({ accountId }) =>
+          this.localBackup!.addGoogleDriveDestination(accountId),
         'destinations.list': async () => ({
           destinations: await this.localBackup!.listDestinations(),
         }),
@@ -218,6 +228,9 @@ export class WorkerRuntime {
           this.localBackup!.reconciledMediaDetails(mediaItemId),
         'media.resolveVerifiedFolder': ({ mediaCopyId }) =>
           this.localBackup!.resolveVerifiedCopyFolder(mediaCopyId),
+        'storage.resolveGoogleDriveObject': ({ mediaCopyId, destinationId }) =>
+          this.localBackup!.resolveGoogleDriveObject(mediaCopyId, destinationId),
+        'dashboard.summary': () => this.localBackup!.dashboardSummary(),
         'tools.diagnostics': () => this.localBackup!.diagnostics(),
       };
       this.rpcServer = new WorkerRpcServer(endpoints.rpc, authToken, handlers);

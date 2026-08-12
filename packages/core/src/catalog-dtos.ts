@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 import {
   AccountConnectionStateSchema,
+  DriveCapabilityStateSchema,
+  GoogleOAuthCapabilitySchema,
   MediaTypeSchema,
   OAuthFlowStatusSchema,
   SourceErrorCodeSchema,
@@ -17,6 +19,8 @@ const NullableStringSchema = z.string().nullable();
 export const AccountCapabilitiesSchema = z
   .object({
     youtubeReadonly: z.boolean(),
+    driveFile: z.boolean(),
+    driveConnectionState: DriveCapabilityStateSchema,
     grantedScopes: z.array(z.string()).max(20),
   })
   .strict();
@@ -105,6 +109,7 @@ export const OAuthBeginWorkerResultSchema = z.discriminatedUnion('status', [
     .object({
       status: z.literal('STARTED'),
       flowId: z.string().uuid(),
+      capability: GoogleOAuthCapabilitySchema,
       authorizationUrl: z.string().url(),
       expiresAt: EpochMillisecondsSchema,
     })
@@ -123,6 +128,7 @@ export const OAuthBeginResultSchema = z.discriminatedUnion('status', [
     .object({
       status: z.literal('STARTED'),
       flowId: z.string().uuid(),
+      capability: GoogleOAuthCapabilitySchema,
       expiresAt: EpochMillisecondsSchema,
     })
     .strict(),
@@ -138,6 +144,7 @@ export const OAuthBeginResultSchema = z.discriminatedUnion('status', [
 export const OAuthFlowDtoSchema = z
   .object({
     flowId: z.string().uuid(),
+    capability: GoogleOAuthCapabilitySchema,
     status: OAuthFlowStatusSchema,
     expiresAt: EpochMillisecondsSchema,
     account: AccountDtoSchema.nullable(),

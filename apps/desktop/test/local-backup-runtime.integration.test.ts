@@ -326,6 +326,10 @@ describe('LocalBackupRuntime durable pipeline', () => {
       const partial = join(stagingDirectory, 'video.source.webm.part');
       await writeFile(partial, 'partial fixture');
       return new Promise<never>((_resolve, reject) => {
+        if (options.signal?.aborted) {
+          reject(options.signal.reason);
+          return;
+        }
         options.signal?.addEventListener('abort', () => reject(options.signal?.reason), {
           once: true,
         });
@@ -424,6 +428,10 @@ describe('LocalBackupRuntime durable pipeline', () => {
       const [, , stagingDirectory, options = {}] = args;
       await writeFile(join(stagingDirectory, 'video.source.webm.part'), 'partial fixture');
       return new Promise<never>((_resolve, reject) => {
+        if (options.signal?.aborted) {
+          reject(options.signal.reason);
+          return;
+        }
         options.signal?.addEventListener('abort', () => reject(options.signal?.reason), {
           once: true,
         });

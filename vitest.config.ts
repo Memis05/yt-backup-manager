@@ -28,6 +28,10 @@ export default defineConfig({
         import.meta.dirname,
         'packages/storage-filesystem/src/index.ts',
       ),
+      '@ytbm/storage-google-drive': resolve(
+        import.meta.dirname,
+        'packages/storage-google-drive/src/index.ts',
+      ),
     },
   },
   test: {

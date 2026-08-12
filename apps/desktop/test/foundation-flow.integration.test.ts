@@ -80,7 +80,10 @@ describe('desktop-to-worker foundation flow', () => {
     );
     const configuredClient = await workerManager.connect();
     await expect(
-      configuredClient.request('accounts.oauthBegin', { accountId: null }),
+      configuredClient.request('accounts.oauthBegin', {
+        accountId: null,
+        capability: 'YOUTUBE',
+      }),
     ).resolves.toMatchObject({ status: 'STARTED' });
     workerManager.disconnect();
 
@@ -129,7 +132,7 @@ describe('desktop-to-worker foundation flow', () => {
     await expect(foundationHandler!(null, {})).resolves.toMatchObject({
       worker: { status: 'READY' },
       database: {
-        schemaVersion: 5,
+        schemaVersion: 6,
         foreignKeysEnabled: true,
         journalMode: 'wal',
       },

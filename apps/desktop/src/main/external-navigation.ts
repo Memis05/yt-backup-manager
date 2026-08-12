@@ -6,7 +6,19 @@ const ALLOWED_EXTERNAL_HOSTS = new Set([
   'youtube.com',
   'www.youtube.com',
   'youtu.be',
+  'drive.google.com',
 ]);
+
+const GOOGLE_DRIVE_PROVIDER_ID_PATTERN = /^[A-Za-z0-9_-]{3,500}$/;
+
+export function googleDriveObjectUrl(providerId: string): string {
+  if (!GOOGLE_DRIVE_PROVIDER_ID_PATTERN.test(providerId)) {
+    throw new Error('Google Drive object identity was rejected');
+  }
+  const url = new URL('https://drive.google.com/open');
+  url.searchParams.set('id', providerId);
+  return url.toString();
+}
 
 export function isAllowedExternalUrl(value: string): boolean {
   try {

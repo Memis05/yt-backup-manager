@@ -6,16 +6,23 @@ import {
   BackupRunsListResultSchema,
   BackupStartResultSchema,
   ChannelBackupSettingsDtoSchema,
+  DashboardSummarySchema,
   MediaBackupDetailsSchema,
   QualityProfileSchema,
   type BackupRunDto,
   type BackupStartResult,
   type ChannelBackupSettingsDto,
+  type DashboardSummary,
   type JobType,
   type MediaBackupDetails,
   type QualityProfile,
 } from '@ytbm/core';
-import type { StoredFilesystemDestination, VolumeIdentity } from '@ytbm/storage-core';
+import type {
+  GoogleDriveResumableState,
+  StoredFilesystemDestination,
+  StoredGoogleDriveDestination,
+  VolumeIdentity,
+} from '@ytbm/storage-core';
 
 import type { WorkerDatabase } from '../database';
 
@@ -24,6 +31,34 @@ export interface PersistedFilesystemDestination extends StoredFilesystemDestinat
   availabilityStatus: string;
   lastProbeAt: number | null;
   lastErrorCode: string | null;
+}
+
+export interface PersistedGoogleDriveDestination extends StoredGoogleDriveDestination {
+  accountEmail: string | null;
+  accountDisplayName: string | null;
+  enabled: boolean;
+  availabilityStatus: string;
+  lastProbeAt: number | null;
+  lastErrorCode: string | null;
+}
+
+export interface ProviderObjectRecord {
+  destinationId: string;
+  logicalKey: string;
+  objectType: string;
+  providerObjectId: string;
+  parentProviderObjectId: string | null;
+  currentName: string;
+}
+
+export interface DriveUploadSessionRecord extends GoogleDriveResumableState {
+  jobId: string;
+  destinationId: string;
+  mediaCopyId: string;
+  parentProviderObjectId: string;
+  expectedBytes: number;
+  expectedSha256: string;
+  sourceReference: unknown;
 }
 
 export interface DestinationPersistenceInput {
@@ -76,7 +111,11 @@ export interface MediaCopyContext {
   mediaItemId: string;
   destinationId: string;
   destinationRootPath: string;
+  destinationType: 'FILESYSTEM' | 'GOOGLE_DRIVE';
+  destinationAccountId: string | null;
+  destinationAccountEmail: string | null;
   relativePath: string | null;
+  providerFileId: string | null;
   container: string | null;
   videoCodec: string | null;
   audioCodec: string | null;
@@ -87,6 +126,8 @@ export interface MediaCopyContext {
   sha256: string | null;
   qualityProfile: QualityProfile | null;
   contentGeneration: string | null;
+  verificationStrength: 'LOCAL_SHA256' | 'PROVIDER_METADATA_SIZE' | 'DOWNLOADED_SHA256' | null;
+  providerMetadata: unknown;
   status: string;
   verifiedAt: number | null;
   missingSince: number | null;
@@ -122,6 +163,7 @@ interface BackupRunRow {
   discovered_count: number;
   downloaded_count: number;
   local_copy_count: number;
+  drive_upload_count: number;
   metadata_update_count: number;
   failed_count: number;
   bytes_downloaded: number;
@@ -158,6 +200,7 @@ function backupRunDto(row: BackupRunRow): BackupRunDto {
     discoveredCount: row.discovered_count,
     downloadedCount: row.downloaded_count,
     localCopyCount: row.local_copy_count,
+    driveUploadCount: row.drive_upload_count,
     metadataUpdateCount: row.metadata_update_count,
     failedCount: row.failed_count,
     bytesDownloaded: row.bytes_downloaded,
@@ -301,6 +344,133 @@ export class LocalBackupRepository {
     return rows.map((row) => this.getDestination(row.id));
   }
 
+  public addGoogleDriveDestination(accountId: string): PersistedGoogleDriveDestination {
+    const account = this.database.sqlite
+      .prepare(
+        `select id from accounts where id = ? and provider = 'GOOGLE'
+         and connection_state = 'CONNECTED'
+         and json_extract(capabilities_json, '$.driveFile') = 1
+         and json_extract(capabilities_json, '$.driveConnectionState') = 'CONNECTED'`,
+      )
+      .get(accountId);
+    if (account === undefined) {
+      throw new Error('Authorize Google Drive for this account before adding a destination');
+    }
+    const existing = this.database.sqlite
+      .prepare(
+        `select id from destinations where destination_type = 'GOOGLE_DRIVE' and account_id = ?`,
+      )
+      .get(accountId) as { id: string } | undefined;
+    const changedAt = this.now();
+    const id = existing?.id ?? randomUUID();
+    if (existing === undefined) {
+      this.database.sqlite
+        .prepare(
+          `insert into destinations (
+            id, destination_type, account_id, enabled, availability_status,
+            created_at, updated_at
+          ) values (?, 'GOOGLE_DRIVE', ?, 1, 'UNKNOWN', ?, ?)`,
+        )
+        .run(id, accountId, changedAt, changedAt);
+    } else {
+      this.database.sqlite
+        .prepare(
+          `update destinations set enabled = 1, availability_status = 'UNKNOWN',
+            last_error_code = null, last_error_at = null, updated_at = ? where id = ?`,
+        )
+        .run(changedAt, id);
+    }
+    return this.getGoogleDriveDestination(id);
+  }
+
+  public getGoogleDriveDestination(id: string): PersistedGoogleDriveDestination {
+    const row = this.database.sqlite
+      .prepare(
+        `select d.id, d.account_id, d.provider_root_id, d.enabled, d.availability_status,
+          d.last_probe_at, d.last_error_code, a.email, a.display_name
+         from destinations d join accounts a on a.id = d.account_id
+         where d.id = ? and d.destination_type = 'GOOGLE_DRIVE'`,
+      )
+      .get(id) as
+      | {
+          id: string;
+          account_id: string;
+          provider_root_id: string | null;
+          enabled: number;
+          availability_status: string;
+          last_probe_at: number | null;
+          last_error_code: string | null;
+          email: string | null;
+          display_name: string | null;
+        }
+      | undefined;
+    if (row === undefined) throw new Error('Google Drive destination was not found');
+    return {
+      id: row.id,
+      accountId: row.account_id,
+      accountEmail: row.email,
+      accountDisplayName: row.display_name,
+      providerRootId: row.provider_root_id,
+      enabled: row.enabled === 1,
+      availabilityStatus: row.availability_status,
+      lastProbeAt: row.last_probe_at,
+      lastErrorCode: row.last_error_code,
+    };
+  }
+
+  public listGoogleDriveDestinations(enabledOnly = false): PersistedGoogleDriveDestination[] {
+    const rows = this.database.sqlite
+      .prepare(
+        `select id from destinations where destination_type = 'GOOGLE_DRIVE'
+         ${enabledOnly ? 'and enabled = 1' : ''} order by created_at`,
+      )
+      .all() as Array<{ id: string }>;
+    return rows.map((row) => this.getGoogleDriveDestination(row.id));
+  }
+
+  public destinationType(destinationId: string): 'FILESYSTEM' | 'GOOGLE_DRIVE' {
+    const row = this.database.sqlite
+      .prepare('select destination_type from destinations where id = ?')
+      .get(destinationId) as { destination_type: 'FILESYSTEM' | 'GOOGLE_DRIVE' } | undefined;
+    if (row === undefined) throw new Error('Backup destination was not found');
+    return row.destination_type;
+  }
+
+  public updateGoogleDriveDestinationProbe(
+    id: string,
+    availabilityStatus: string,
+    lastErrorCode: string | null,
+  ): PersistedGoogleDriveDestination {
+    const changedAt = this.now();
+    this.database.sqlite
+      .prepare(
+        `update destinations set availability_status = ?, last_probe_at = ?,
+          last_error_code = ?, last_error_at = ?, updated_at = ?
+         where id = ? and destination_type = 'GOOGLE_DRIVE'`,
+      )
+      .run(
+        availabilityStatus,
+        changedAt,
+        lastErrorCode,
+        lastErrorCode === null ? null : changedAt,
+        changedAt,
+        id,
+      );
+    return this.getGoogleDriveDestination(id);
+  }
+
+  public setGoogleDriveRoot(id: string, providerRootId: string): void {
+    const changedAt = this.now();
+    const result = this.database.sqlite
+      .prepare(
+        `update destinations set provider_root_id = ?, availability_status = 'AVAILABLE',
+          last_probe_at = ?, last_error_code = null, last_error_at = null, updated_at = ?
+         where id = ? and destination_type = 'GOOGLE_DRIVE'`,
+      )
+      .run(providerRootId, changedAt, changedAt, id);
+    if (result.changes !== 1) throw new Error('Google Drive destination was not found');
+  }
+
   public updateDestinationProbe(
     id: string,
     input: DestinationPersistenceInput,
@@ -383,11 +553,17 @@ export class LocalBackupRepository {
       for (const destinationId of uniqueDestinationIds) {
         const destination = this.database.sqlite
           .prepare(
-            `select id from destinations where id = ? and destination_type = 'FILESYSTEM' and enabled = 1`,
+            `select d.id from destinations d
+             left join accounts a on a.id = d.account_id
+             where d.id = ? and d.enabled = 1 and (
+               d.destination_type = 'FILESYSTEM' or
+               (d.destination_type = 'GOOGLE_DRIVE' and
+                json_extract(a.capabilities_json, '$.driveFile') = 1)
+             )`,
           )
           .get(destinationId);
         if (destination === undefined)
-          throw new Error('A selected filesystem destination is invalid');
+          throw new Error('A selected backup destination is unavailable or invalid');
       }
       this.database.sqlite
         .prepare(
@@ -420,7 +596,7 @@ export class LocalBackupRepository {
   ): BackupStartResult {
     const settings = this.getChannelSettings(channelId, defaultQualityProfile);
     if (settings.destinationIds.length === 0) {
-      throw new Error('Select at least one local destination before starting backup');
+      throw new Error('Select at least one effective backup destination before starting backup');
     }
     const channel = this.database.sqlite
       .prepare(
@@ -463,7 +639,7 @@ export class LocalBackupRepository {
         eventType: 'BACKUP_STARTED',
         channelId,
         backupRunId: runId,
-        summary: `Local backup started for ${channel.title}.`,
+        summary: `Backup started for ${channel.title}.`,
         createdAt: plannedAt,
       });
 
@@ -481,6 +657,8 @@ export class LocalBackupRepository {
       }>;
       const manifestDependencies = new Map<string, string[]>();
       const destinationRepairEpochs = new Map<string, number>();
+      const destinationTypes = new Map<string, 'FILESYSTEM' | 'GOOGLE_DRIVE'>();
+      const driveFolderDependencies = new Map<string, string>();
       const cleanupDependencies = new Map<
         string,
         {
@@ -491,12 +669,44 @@ export class LocalBackupRepository {
         }
       >();
       for (const destinationId of settings.destinationIds) {
+        const destinationType = this.destinationType(destinationId);
+        destinationTypes.set(destinationId, destinationType);
         manifestDependencies.set(destinationId, []);
         destinationRepairEpochs.set(destinationId, 0);
+        if (destinationType === 'GOOGLE_DRIVE') {
+          const rootId = this.insertJob({
+            backupRunId: runId,
+            channelId,
+            destinationId,
+            jobType: 'ENSURE_GOOGLE_DRIVE_ROOT',
+            status: 'READY',
+            priority: 65,
+            payload: {},
+            idempotencyKey: `drive-root:${destinationId}:run:${runId}`,
+          });
+          const folderId = this.insertJob({
+            backupRunId: runId,
+            channelId,
+            destinationId,
+            jobType: 'ENSURE_GOOGLE_DRIVE_FOLDER',
+            status: 'PENDING',
+            priority: 64,
+            payload: {},
+            idempotencyKey: `drive-folders:${destinationId}:${channelId}:run:${runId}`,
+            dependencies: [rootId],
+          });
+          driveFolderDependencies.set(destinationId, folderId);
+          manifestDependencies.get(destinationId)!.push(folderId);
+          plannedJobs += 2;
+        }
       }
 
       for (const media of mediaRows) {
         const verifiedCopies = this.verifiedCopies(media.id);
+        const verifiedLocalSource =
+          verifiedCopies.find((copy) => copy.destinationType === 'FILESYSTEM') ?? null;
+        const verifiedDriveSource =
+          verifiedCopies.find((copy) => copy.destinationType === 'GOOGLE_DRIVE') ?? null;
         const selectedCopies = new Map(
           settings.destinationIds.map((destinationId) => [
             destinationId,
@@ -525,71 +735,94 @@ export class LocalBackupRepository {
         let acquisitionDependency: string | null = null;
         let acquisitionGeneration: string | null = null;
         let acquisitionStagingDirectory: string | null = null;
-        if (missingDestinations.length > 0 && verifiedCopies.length === 0) {
-          if (media.source_status === 'REMOVED' || media.source_status === 'UNAVAILABLE') {
-            continue;
+        if (missingDestinations.length > 0 && verifiedLocalSource === null) {
+          if (verifiedDriveSource !== null) {
+            const generation = `drive-reuse-${verifiedDriveSource.id}-run-${runId}`;
+            const stagingDirectory = join(stagingRoot, 'drive', media.id, generation);
+            acquisitionGeneration = generation;
+            acquisitionStagingDirectory = stagingDirectory;
+            acquisitionDependency = this.insertJob({
+              backupRunId: runId,
+              channelId,
+              mediaItemId: media.id,
+              destinationId: verifiedDriveSource.destinationId,
+              jobType: 'DOWNLOAD_FROM_GOOGLE_DRIVE',
+              status: 'READY',
+              priority: 60,
+              payload: {
+                sourceCopyId: verifiedDriveSource.id,
+                generation,
+                stagingDirectory,
+              },
+              idempotencyKey: `drive-download:${verifiedDriveSource.id}:${verifiedDriveSource.sha256 ?? 'unknown'}:run:${runId}`,
+            });
+            plannedJobs += 1;
+          } else {
+            if (media.source_status === 'REMOVED' || media.source_status === 'UNAVAILABLE') {
+              continue;
+            }
+            const generation = `q1-${settings.effectiveQualityProfile.toLowerCase()}${
+              acquisitionRepairEpoch === 0 ? '' : `-repair-${acquisitionRepairEpoch}`
+            }-run-${runId}`;
+            const stagingDirectory = join(stagingRoot, 'youtube', media.id, generation);
+            acquisitionGeneration = generation;
+            acquisitionStagingDirectory = stagingDirectory;
+            const formatId = this.insertJob({
+              backupRunId: runId,
+              channelId,
+              mediaItemId: media.id,
+              jobType: 'FORMAT_PROBE',
+              status: 'READY',
+              priority: 100,
+              payload: { qualityProfile: settings.effectiveQualityProfile, stagingDirectory },
+              idempotencyKey: `format:${media.id}:q1:${settings.effectiveQualityProfile}${acquisitionRepairSuffix}:run:${runId}`,
+            });
+            const downloadId = this.insertJob({
+              backupRunId: runId,
+              channelId,
+              mediaItemId: media.id,
+              jobType: 'DOWNLOAD_MEDIA',
+              status: 'PENDING',
+              priority: 90,
+              payload: { stagingDirectory, generation },
+              idempotencyKey: `download:${media.id}:q1:${settings.effectiveQualityProfile}${acquisitionRepairSuffix}:run:${runId}`,
+              dependencies: [formatId],
+            });
+            const postProcessId = this.insertJob({
+              backupRunId: runId,
+              channelId,
+              mediaItemId: media.id,
+              jobType: 'POST_PROCESS_MEDIA',
+              status: 'PENDING',
+              priority: 80,
+              payload: { stagingDirectory, generation },
+              idempotencyKey: `post-process:${media.id}:q1:${settings.effectiveQualityProfile}${acquisitionRepairSuffix}:run:${runId}`,
+              dependencies: [downloadId],
+            });
+            const hashId = this.insertJob({
+              backupRunId: runId,
+              channelId,
+              mediaItemId: media.id,
+              jobType: 'HASH_STAGING_MEDIA',
+              status: 'PENDING',
+              priority: 70,
+              payload: { generation },
+              idempotencyKey: `hash:${media.id}:q1:${settings.effectiveQualityProfile}${acquisitionRepairSuffix}:run:${runId}`,
+              dependencies: [postProcessId],
+            });
+            acquisitionDependency = this.insertJob({
+              backupRunId: runId,
+              channelId,
+              mediaItemId: media.id,
+              jobType: 'VERIFY_STAGING_MEDIA',
+              status: 'PENDING',
+              priority: 60,
+              payload: { generation },
+              idempotencyKey: `verify-staging:${media.id}:q1:${settings.effectiveQualityProfile}${acquisitionRepairSuffix}:run:${runId}`,
+              dependencies: [hashId],
+            });
+            plannedJobs += 5;
           }
-          const generation = `q1-${settings.effectiveQualityProfile.toLowerCase()}${
-            acquisitionRepairEpoch === 0 ? '' : `-repair-${acquisitionRepairEpoch}`
-          }-run-${runId}`;
-          const stagingDirectory = join(stagingRoot, 'youtube', media.id, generation);
-          acquisitionGeneration = generation;
-          acquisitionStagingDirectory = stagingDirectory;
-          const formatId = this.insertJob({
-            backupRunId: runId,
-            channelId,
-            mediaItemId: media.id,
-            jobType: 'FORMAT_PROBE',
-            status: 'READY',
-            priority: 100,
-            payload: { qualityProfile: settings.effectiveQualityProfile, stagingDirectory },
-            idempotencyKey: `format:${media.id}:q1:${settings.effectiveQualityProfile}${acquisitionRepairSuffix}:run:${runId}`,
-          });
-          const downloadId = this.insertJob({
-            backupRunId: runId,
-            channelId,
-            mediaItemId: media.id,
-            jobType: 'DOWNLOAD_MEDIA',
-            status: 'PENDING',
-            priority: 90,
-            payload: { stagingDirectory, generation },
-            idempotencyKey: `download:${media.id}:q1:${settings.effectiveQualityProfile}${acquisitionRepairSuffix}:run:${runId}`,
-            dependencies: [formatId],
-          });
-          const postProcessId = this.insertJob({
-            backupRunId: runId,
-            channelId,
-            mediaItemId: media.id,
-            jobType: 'POST_PROCESS_MEDIA',
-            status: 'PENDING',
-            priority: 80,
-            payload: { stagingDirectory, generation },
-            idempotencyKey: `post-process:${media.id}:q1:${settings.effectiveQualityProfile}${acquisitionRepairSuffix}:run:${runId}`,
-            dependencies: [downloadId],
-          });
-          const hashId = this.insertJob({
-            backupRunId: runId,
-            channelId,
-            mediaItemId: media.id,
-            jobType: 'HASH_STAGING_MEDIA',
-            status: 'PENDING',
-            priority: 70,
-            payload: { generation },
-            idempotencyKey: `hash:${media.id}:q1:${settings.effectiveQualityProfile}${acquisitionRepairSuffix}:run:${runId}`,
-            dependencies: [postProcessId],
-          });
-          acquisitionDependency = this.insertJob({
-            backupRunId: runId,
-            channelId,
-            mediaItemId: media.id,
-            jobType: 'VERIFY_STAGING_MEDIA',
-            status: 'PENDING',
-            priority: 60,
-            payload: { generation },
-            idempotencyKey: `verify-staging:${media.id}:q1:${settings.effectiveQualityProfile}${acquisitionRepairSuffix}:run:${runId}`,
-            dependencies: [hashId],
-          });
-          plannedJobs += 5;
         }
 
         for (const destinationId of settings.destinationIds) {
@@ -602,43 +835,80 @@ export class LocalBackupRepository {
             destinationId,
             Math.max(destinationRepairEpochs.get(destinationId) ?? 0, repairEpoch),
           );
+          const destinationType = destinationTypes.get(destinationId)!;
           if (existingCopy === undefined) {
-            const sourceCopy = verifiedCopies[0] ?? null;
             const copyId = this.ensureMediaCopy(media.id, destinationId, plannedAt);
-            const dependencies = acquisitionDependency === null ? [] : [acquisitionDependency];
-            const copyJobId = this.insertJob({
-              backupRunId: runId,
-              channelId,
-              mediaItemId: media.id,
-              destinationId,
-              jobType: 'COPY_TO_FILESYSTEM',
-              status: dependencies.length === 0 ? 'READY' : 'PENDING',
-              priority: 50,
-              payload: {
-                mediaCopyId: copyId,
-                qualityProfile: settings.effectiveQualityProfile,
-                contentGeneration: `q1:${settings.effectiveQualityProfile}`,
-                sourceCopyId: sourceCopy?.id ?? null,
-              },
-              idempotencyKey: `copy:${media.id}:${destinationId}:q1:${settings.effectiveQualityProfile}${repairSuffix}:run:${runId}`,
-              dependencies,
-            });
-            verifyId = this.insertJob({
-              backupRunId: runId,
-              channelId,
-              mediaItemId: media.id,
-              destinationId,
-              jobType: 'VERIFY_FILESYSTEM_COPY',
-              status: 'PENDING',
-              priority: 40,
-              payload: {
-                mediaCopyId: copyId,
-                qualityProfile: settings.effectiveQualityProfile,
-                contentGeneration: `q1:${settings.effectiveQualityProfile}`,
-              },
-              idempotencyKey: `verify-copy:${media.id}:${destinationId}:q1:${settings.effectiveQualityProfile}${repairSuffix}:run:${runId}`,
-              dependencies: [copyJobId],
-            });
+            const sourceDependencies =
+              acquisitionDependency === null ? [] : [acquisitionDependency];
+            if (destinationType === 'FILESYSTEM') {
+              const copyJobId = this.insertJob({
+                backupRunId: runId,
+                channelId,
+                mediaItemId: media.id,
+                destinationId,
+                jobType: 'COPY_TO_FILESYSTEM',
+                status: sourceDependencies.length === 0 ? 'READY' : 'PENDING',
+                priority: 50,
+                payload: {
+                  mediaCopyId: copyId,
+                  qualityProfile: settings.effectiveQualityProfile,
+                  contentGeneration: `q1:${settings.effectiveQualityProfile}`,
+                  sourceCopyId: verifiedLocalSource?.id ?? null,
+                },
+                idempotencyKey: `copy:${media.id}:${destinationId}:q1:${settings.effectiveQualityProfile}${repairSuffix}:run:${runId}`,
+                dependencies: sourceDependencies,
+              });
+              verifyId = this.insertJob({
+                backupRunId: runId,
+                channelId,
+                mediaItemId: media.id,
+                destinationId,
+                jobType: 'VERIFY_FILESYSTEM_COPY',
+                status: 'PENDING',
+                priority: 40,
+                payload: {
+                  mediaCopyId: copyId,
+                  qualityProfile: settings.effectiveQualityProfile,
+                  contentGeneration: `q1:${settings.effectiveQualityProfile}`,
+                },
+                idempotencyKey: `verify-copy:${media.id}:${destinationId}:q1:${settings.effectiveQualityProfile}${repairSuffix}:run:${runId}`,
+                dependencies: [copyJobId],
+              });
+            } else {
+              const uploadDependencies = [
+                driveFolderDependencies.get(destinationId)!,
+                ...sourceDependencies,
+              ];
+              const uploadId = this.insertJob({
+                backupRunId: runId,
+                channelId,
+                mediaItemId: media.id,
+                destinationId,
+                jobType: 'UPLOAD_TO_GOOGLE_DRIVE',
+                status: 'PENDING',
+                priority: 50,
+                payload: {
+                  mediaCopyId: copyId,
+                  qualityProfile: settings.effectiveQualityProfile,
+                  contentGeneration: `q1:${settings.effectiveQualityProfile}`,
+                  sourceCopyId: verifiedLocalSource?.id ?? null,
+                },
+                idempotencyKey: `drive-upload:${media.id}:${destinationId}:q1:${settings.effectiveQualityProfile}${repairSuffix}:run:${runId}`,
+                dependencies: uploadDependencies,
+              });
+              verifyId = this.insertJob({
+                backupRunId: runId,
+                channelId,
+                mediaItemId: media.id,
+                destinationId,
+                jobType: 'VERIFY_GOOGLE_DRIVE_COPY',
+                status: 'PENDING',
+                priority: 40,
+                payload: { mediaCopyId: copyId },
+                idempotencyKey: `drive-verify:${media.id}:${destinationId}:q1:${settings.effectiveQualityProfile}${repairSuffix}:run:${runId}`,
+                dependencies: [uploadId],
+              });
+            }
             plannedJobs += 2;
           }
 
@@ -652,20 +922,29 @@ export class LocalBackupRepository {
           );
           let metadataId: string | null = null;
           if (!metadataCurrent || verifyId !== null) {
+            const metadataDependencies = [
+              ...(verifyId === null ? [] : [verifyId]),
+              ...(destinationType === 'GOOGLE_DRIVE'
+                ? [driveFolderDependencies.get(destinationId)!]
+                : []),
+            ];
             metadataId = this.insertJob({
               backupRunId: runId,
               channelId,
               mediaItemId: media.id,
               destinationId,
-              jobType: 'WRITE_DESTINATION_METADATA',
-              status: verifyId === null ? 'READY' : 'PENDING',
+              jobType:
+                destinationType === 'GOOGLE_DRIVE'
+                  ? 'UPDATE_GOOGLE_DRIVE_METADATA'
+                  : 'WRITE_DESTINATION_METADATA',
+              status: metadataDependencies.length === 0 ? 'READY' : 'PENDING',
               priority: 30,
               payload: {
                 mediaCopyId: copy?.id ?? this.ensureMediaCopy(media.id, destinationId, plannedAt),
                 contentGeneration: metadataGeneration,
               },
               idempotencyKey: `metadata:${media.id}:${destinationId}:v${media.metadata_version}:q1:${settings.effectiveQualityProfile}${repairSuffix}:run:${runId}`,
-              dependencies: verifyId === null ? [] : [verifyId],
+              dependencies: metadataDependencies,
             });
             manifestDependencies.get(destinationId)!.push(metadataId);
             plannedJobs += 1;
@@ -682,18 +961,28 @@ export class LocalBackupRepository {
                 thumbnailGeneration,
               )
             ) {
-              this.insertJob({
+              const thumbnailDependencies = [
+                ...(verifyId === null ? [] : [verifyId]),
+                ...(destinationType === 'GOOGLE_DRIVE'
+                  ? [driveFolderDependencies.get(destinationId)!]
+                  : []),
+              ];
+              const thumbnailId = this.insertJob({
                 backupRunId: runId,
                 channelId,
                 mediaItemId: media.id,
                 destinationId,
-                jobType: 'DOWNLOAD_THUMBNAIL',
-                status: verifyId === null ? 'READY' : 'PENDING',
+                jobType:
+                  destinationType === 'GOOGLE_DRIVE'
+                    ? 'UPDATE_GOOGLE_DRIVE_THUMBNAIL'
+                    : 'DOWNLOAD_THUMBNAIL',
+                status: thumbnailDependencies.length === 0 ? 'READY' : 'PENDING',
                 priority: 20,
                 payload: { contentGeneration: thumbnailGeneration },
                 idempotencyKey: `thumbnail:${media.id}:${destinationId}:v${media.metadata_version}${repairSuffix}:run:${runId}`,
-                dependencies: verifyId === null ? [] : [verifyId],
+                dependencies: thumbnailDependencies,
               });
+              manifestDependencies.get(destinationId)!.push(thumbnailId);
               plannedJobs += 1;
             }
           }
@@ -724,7 +1013,10 @@ export class LocalBackupRepository {
           backupRunId: runId,
           channelId,
           destinationId,
-          jobType: 'UPDATE_MANIFEST',
+          jobType:
+            destinationTypes.get(destinationId) === 'GOOGLE_DRIVE'
+              ? 'UPDATE_GOOGLE_DRIVE_MANIFEST'
+              : 'UPDATE_MANIFEST',
           status: 'PENDING',
           priority: 10,
           payload: { generation: manifestGeneration },
@@ -827,8 +1119,10 @@ export class LocalBackupRepository {
   public getMediaCopy(copyId: string): MediaCopyContext {
     const row = this.database.sqlite
       .prepare(
-        `select mc.*, d.root_path as destination_root_path from media_copies mc
-         join destinations d on d.id = mc.destination_id where mc.id = ?`,
+        `select mc.*, d.destination_type, d.account_id, d.root_path as destination_root_path,
+          a.email as destination_account_email
+         from media_copies mc join destinations d on d.id = mc.destination_id
+         left join accounts a on a.id = d.account_id where mc.id = ?`,
       )
       .get(copyId) as Record<string, unknown> | undefined;
     if (row === undefined) throw new Error('Media copy was not found');
@@ -836,8 +1130,15 @@ export class LocalBackupRepository {
       id: String(row.id),
       mediaItemId: String(row.media_item_id),
       destinationId: String(row.destination_id),
-      destinationRootPath: String(row.destination_root_path),
+      destinationRootPath:
+        row.destination_root_path === null
+          ? `Google Drive${row.destination_account_email === null ? '' : ` - ${String(row.destination_account_email)}`}`
+          : String(row.destination_root_path),
+      destinationType: row.destination_type as MediaCopyContext['destinationType'],
+      destinationAccountId: row.account_id as string | null,
+      destinationAccountEmail: row.destination_account_email as string | null,
       relativePath: row.relative_path as string | null,
+      providerFileId: row.provider_file_id as string | null,
       container: row.container as string | null,
       videoCodec: row.video_codec as string | null,
       audioCodec: row.audio_codec as string | null,
@@ -849,6 +1150,11 @@ export class LocalBackupRepository {
       qualityProfile:
         row.quality_profile === null ? null : QualityProfileSchema.parse(row.quality_profile),
       contentGeneration: row.content_generation as string | null,
+      verificationStrength: row.verification_strength as MediaCopyContext['verificationStrength'],
+      providerMetadata:
+        row.provider_metadata_json === null
+          ? null
+          : (JSON.parse(String(row.provider_metadata_json)) as unknown),
       status: String(row.status),
       verifiedAt: row.verified_at as number | null,
       missingSince: row.missing_since as number | null,
@@ -1001,6 +1307,51 @@ export class LocalBackupRepository {
       );
   }
 
+  public updateDriveMediaCopyTransferred(
+    copyId: string,
+    result: {
+      relativePath: string;
+      providerFileId: string;
+      container: string;
+      videoCodec: string | null;
+      audioCodec: string | null;
+      width: number | null;
+      height: number | null;
+      fps: number | null;
+      bytes: number;
+      sha256: string;
+      qualityProfile: QualityProfile;
+      contentGeneration: string;
+      providerMetadata: unknown;
+    },
+  ): void {
+    this.database.sqlite
+      .prepare(
+        `update media_copies set relative_path = ?, provider_file_id = ?, container = ?,
+          video_codec = ?, audio_codec = ?, width = ?, height = ?, fps = ?, bytes = ?,
+          sha256 = ?, quality_profile = ?, content_generation = ?, status = 'VERIFYING',
+          verification_strength = null, provider_metadata_json = ?, last_error_code = null,
+          last_error_at = null, updated_at = ? where id = ?`,
+      )
+      .run(
+        result.relativePath,
+        result.providerFileId,
+        result.container,
+        result.videoCodec,
+        result.audioCodec,
+        result.width,
+        result.height,
+        result.fps,
+        result.bytes,
+        result.sha256,
+        result.qualityProfile,
+        result.contentGeneration,
+        JSON.stringify(result.providerMetadata),
+        this.now(),
+        copyId,
+      );
+  }
+
   public markMediaCopyTransferring(copyId: string): void {
     this.database.sqlite
       .prepare(
@@ -1010,16 +1361,21 @@ export class LocalBackupRepository {
       .run(this.now(), copyId);
   }
 
-  public markMediaCopyVerified(copyId: string): boolean {
+  public markMediaCopyVerified(
+    copyId: string,
+    verificationStrength:
+      'LOCAL_SHA256' | 'PROVIDER_METADATA_SIZE' | 'DOWNLOADED_SHA256' = 'LOCAL_SHA256',
+  ): boolean {
     const changedAt = this.now();
     return (
       this.database.sqlite
         .prepare(
-          `update media_copies set status = 'VERIFIED', verified_at = ?, last_checked_at = ?,
+          `update media_copies set status = 'VERIFIED', verification_strength = ?,
+          verified_at = ?, last_checked_at = ?,
           missing_since = null, corrupt_since = null, last_error_code = null,
           last_error_at = null, updated_at = ? where id = ? and status = 'VERIFYING'`,
         )
-        .run(changedAt, changedAt, changedAt, copyId).changes === 1
+        .run(verificationStrength, changedAt, changedAt, changedAt, copyId).changes === 1
     );
   }
 
@@ -1050,16 +1406,19 @@ export class LocalBackupRepository {
     bytes: number;
     sha256: string;
     contentGeneration: string;
+    providerFileId?: string | null;
   }): void {
     const changedAt = this.now();
     this.database.sqlite
       .prepare(
         `insert into media_artifacts (
-          id, media_item_id, destination_id, artifact_type, relative_path, bytes, sha256,
+          id, media_item_id, destination_id, artifact_type, relative_path, provider_file_id,
+          bytes, sha256,
           content_generation, status, verified_at, last_checked_at, created_at, updated_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, 'VERIFIED', ?, ?, ?, ?)
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, 'VERIFIED', ?, ?, ?, ?)
         on conflict(media_item_id, destination_id, artifact_type) do update set
-          relative_path = excluded.relative_path, bytes = excluded.bytes, sha256 = excluded.sha256,
+          relative_path = excluded.relative_path, provider_file_id = excluded.provider_file_id,
+          bytes = excluded.bytes, sha256 = excluded.sha256,
           content_generation = excluded.content_generation, status = 'VERIFIED',
           verified_at = excluded.verified_at, last_checked_at = excluded.last_checked_at,
           updated_at = excluded.updated_at`,
@@ -1070,6 +1429,7 @@ export class LocalBackupRepository {
         input.destinationId,
         input.artifactType,
         input.relativePath,
+        input.providerFileId ?? null,
         input.bytes,
         input.sha256,
         input.contentGeneration,
@@ -1078,6 +1438,140 @@ export class LocalBackupRepository {
         changedAt,
         changedAt,
       );
+  }
+
+  public recordDownloadedDriveVerification(copyId: string): void {
+    this.database.sqlite
+      .prepare(
+        `update media_copies set verification_strength = 'DOWNLOADED_SHA256',
+          last_checked_at = ?, updated_at = ? where id = ? and status = 'VERIFIED'`,
+      )
+      .run(this.now(), this.now(), copyId);
+  }
+
+  public getMediaArtifactProviderId(
+    mediaItemId: string,
+    destinationId: string,
+    artifactType: 'METADATA' | 'THUMBNAIL',
+  ): string | null {
+    const row = this.database.sqlite
+      .prepare(
+        `select provider_file_id from media_artifacts
+         where media_item_id = ? and destination_id = ? and artifact_type = ?`,
+      )
+      .get(mediaItemId, destinationId, artifactType) as
+      { provider_file_id: string | null } | undefined;
+    return row?.provider_file_id ?? null;
+  }
+
+  public getProviderObject(destinationId: string, logicalKey: string): ProviderObjectRecord | null {
+    const row = this.database.sqlite
+      .prepare(
+        `select destination_id, logical_key, object_type, provider_object_id,
+          parent_provider_object_id, current_name from provider_objects
+         where destination_id = ? and logical_key = ?`,
+      )
+      .get(destinationId, logicalKey) as
+      | {
+          destination_id: string;
+          logical_key: string;
+          object_type: string;
+          provider_object_id: string;
+          parent_provider_object_id: string | null;
+          current_name: string;
+        }
+      | undefined;
+    return row === undefined
+      ? null
+      : {
+          destinationId: row.destination_id,
+          logicalKey: row.logical_key,
+          objectType: row.object_type,
+          providerObjectId: row.provider_object_id,
+          parentProviderObjectId: row.parent_provider_object_id,
+          currentName: row.current_name,
+        };
+  }
+
+  public upsertProviderObject(input: ProviderObjectRecord): void {
+    const changedAt = this.now();
+    this.database.sqlite
+      .prepare(
+        `insert into provider_objects (
+          id, destination_id, logical_key, object_type, provider_object_id,
+          parent_provider_object_id, current_name, created_at, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        on conflict(destination_id, logical_key) do update set
+          object_type = excluded.object_type, provider_object_id = excluded.provider_object_id,
+          parent_provider_object_id = excluded.parent_provider_object_id,
+          current_name = excluded.current_name, updated_at = excluded.updated_at`,
+      )
+      .run(
+        randomUUID(),
+        input.destinationId,
+        input.logicalKey,
+        input.objectType,
+        input.providerObjectId,
+        input.parentProviderObjectId,
+        input.currentName,
+        changedAt,
+        changedAt,
+      );
+  }
+
+  public getDriveUploadSession(jobId: string): DriveUploadSessionRecord | null {
+    const row = this.database.sqlite
+      .prepare('select * from drive_upload_sessions where job_id = ?')
+      .get(jobId) as Record<string, unknown> | undefined;
+    if (row === undefined) return null;
+    return {
+      jobId: String(row.job_id),
+      destinationId: String(row.destination_id),
+      mediaCopyId: String(row.media_copy_id),
+      parentProviderObjectId: String(row.parent_provider_object_id),
+      sessionUri: String(row.session_uri),
+      providerFileId: row.provider_file_id as string | null,
+      bytesAcknowledged: Number(row.bytes_acknowledged),
+      expectedBytes: Number(row.expected_bytes),
+      expectedSha256: String(row.expected_sha256),
+      sourceReference: JSON.parse(String(row.source_reference_json)) as unknown,
+    };
+  }
+
+  public saveDriveUploadSession(input: DriveUploadSessionRecord): void {
+    const changedAt = this.now();
+    this.database.sqlite
+      .prepare(
+        `insert into drive_upload_sessions (
+          job_id, destination_id, media_copy_id, parent_provider_object_id, session_uri,
+          provider_file_id, bytes_acknowledged, expected_bytes, expected_sha256,
+          source_reference_json, started_at, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        on conflict(job_id) do update set
+          parent_provider_object_id = excluded.parent_provider_object_id,
+          session_uri = excluded.session_uri, provider_file_id = excluded.provider_file_id,
+          bytes_acknowledged = excluded.bytes_acknowledged,
+          expected_bytes = excluded.expected_bytes, expected_sha256 = excluded.expected_sha256,
+          source_reference_json = excluded.source_reference_json, updated_at = excluded.updated_at`,
+      )
+      .run(
+        input.jobId,
+        input.destinationId,
+        input.mediaCopyId,
+        input.parentProviderObjectId,
+        input.sessionUri,
+        input.providerFileId,
+        input.bytesAcknowledged,
+        input.expectedBytes,
+        input.expectedSha256,
+        JSON.stringify(input.sourceReference),
+        changedAt,
+        changedAt,
+      );
+  }
+
+  public deleteDriveUploadSession(jobId: string): void {
+    this.database.sqlite.prepare('delete from drive_upload_sessions where job_id = ?').run(jobId);
   }
 
   public getChannelManifestData(channelId: string, destinationId: string): ChannelManifestData {
@@ -1144,8 +1638,10 @@ export class LocalBackupRepository {
     const media = this.getMediaContext(mediaItemId);
     const rows = this.database.sqlite
       .prepare(
-        `select mc.*, d.root_path, d.availability_status from media_copies mc
-         join destinations d on d.id = mc.destination_id where mc.media_item_id = ?
+        `select mc.*, d.destination_type, d.root_path, d.availability_status,
+          a.email as account_email from media_copies mc
+         join destinations d on d.id = mc.destination_id
+         left join accounts a on a.id = d.account_id where mc.media_item_id = ?
          order by d.created_at`,
       )
       .all(mediaItemId) as Array<Record<string, unknown>>;
@@ -1158,8 +1654,14 @@ export class LocalBackupRepository {
       copies: rows.map((row) => ({
         id: row.id,
         destinationId: row.destination_id,
-        destinationPath: row.root_path,
+        destinationPath:
+          row.destination_type === 'GOOGLE_DRIVE'
+            ? `Google Drive${row.account_email === null ? '' : ` - ${String(row.account_email)}`}`
+            : row.root_path,
+        destinationType: row.destination_type,
+        destinationAccountEmail: row.account_email,
         relativePath: row.relative_path,
+        providerFileIdAvailable: row.provider_file_id !== null,
         status: row.status,
         availabilityStatus: row.availability_status,
         container: row.container,
@@ -1171,8 +1673,57 @@ export class LocalBackupRepository {
         bytes: row.bytes,
         sha256: row.sha256,
         qualityProfile: row.quality_profile,
+        verificationStrength: row.verification_strength,
         verifiedAt: row.verified_at,
       })),
+    });
+  }
+
+  public dashboardSummary(): DashboardSummary {
+    const channels = this.database.sqlite
+      .prepare('select count(*) as count from channels where backup_enabled = 1')
+      .get() as { count: number };
+    const media = this.database.sqlite
+      .prepare(
+        `select count(*) as count from media_items m join channels c on c.id = m.channel_id
+         where c.backup_enabled = 1`,
+      )
+      .get() as { count: number };
+    const copies = this.database.sqlite
+      .prepare(
+        `select count(*) as intended,
+          sum(case when mc.status = 'VERIFIED' then 1 else 0 end) as verified,
+          sum(case when mc.status in ('FAILED','MISSING','CORRUPT') then 1 else 0 end) as failed,
+          sum(case when mc.status = 'VERIFIED' then coalesce(mc.bytes, 0) else 0 end) as bytes,
+          sum(case when mc.status = 'VERIFIED' and d.destination_type = 'FILESYSTEM' then 1 else 0 end) as local_verified,
+          sum(case when mc.status = 'VERIFIED' and d.destination_type = 'GOOGLE_DRIVE' then 1 else 0 end) as drive_verified
+         from media_items m
+         join channels c on c.id = m.channel_id and c.backup_enabled = 1
+         join channel_destinations cd on cd.channel_id = c.id and cd.enabled = 1
+         join destinations d on d.id = cd.destination_id and d.enabled = 1
+         left join media_copies mc on mc.media_item_id = m.id and mc.destination_id = d.id`,
+      )
+      .get() as Record<string, number | null>;
+    const intended = Number(copies.intended ?? 0);
+    const verified = Number(copies.verified ?? 0);
+    const failed = Number(copies.failed ?? 0);
+    const lastRun = this.database.sqlite
+      .prepare(
+        `select max(completed_at) as completed_at from backup_runs
+         where status in ('COMPLETED','COMPLETED_WITH_ERRORS')`,
+      )
+      .get() as { completed_at: number | null };
+    return DashboardSummarySchema.parse({
+      selectedChannelCount: channels.count,
+      mediaCount: media.count,
+      intendedCopyCount: intended,
+      verifiedCopyCount: verified,
+      pendingCopyCount: Math.max(0, intended - verified - failed),
+      failedCopyCount: failed,
+      verifiedBytes: Number(copies.bytes ?? 0),
+      localVerifiedCount: Number(copies.local_verified ?? 0),
+      driveVerifiedCount: Number(copies.drive_verified ?? 0),
+      lastBackupAt: lastRun.completed_at,
     });
   }
 
@@ -1316,9 +1867,10 @@ export class LocalBackupRepository {
           sum(case when status = 'CANCELLED' then 1 else 0 end) as cancelled,
           sum(case when status = 'COMPLETED' and job_type = 'DOWNLOAD_MEDIA' then 1 else 0 end) as downloaded,
           sum(case when status = 'COMPLETED' and job_type = 'VERIFY_FILESYSTEM_COPY' then 1 else 0 end) as copied,
-          sum(case when status = 'COMPLETED' and job_type = 'WRITE_DESTINATION_METADATA' then 1 else 0 end) as metadata,
+          sum(case when status = 'COMPLETED' and job_type = 'VERIFY_GOOGLE_DRIVE_COPY' then 1 else 0 end) as drive_uploaded,
+          sum(case when status = 'COMPLETED' and job_type in ('WRITE_DESTINATION_METADATA','UPDATE_GOOGLE_DRIVE_METADATA') then 1 else 0 end) as metadata,
           coalesce(sum(case when status = 'COMPLETED' and job_type = 'DOWNLOAD_MEDIA' then bytes_processed else 0 end), 0) as bytes_downloaded,
-          coalesce(sum(case when status = 'COMPLETED' and job_type = 'COPY_TO_FILESYSTEM' then bytes_processed else 0 end), 0) as bytes_transferred,
+          coalesce(sum(case when status = 'COMPLETED' and job_type in ('COPY_TO_FILESYSTEM','UPLOAD_TO_GOOGLE_DRIVE') then bytes_processed else 0 end), 0) as bytes_transferred,
           count(*) as total
          from jobs where backup_run_id = ?`,
       )
@@ -1345,7 +1897,7 @@ export class LocalBackupRepository {
       .get(runId) as { status: string } | undefined;
     this.database.sqlite
       .prepare(
-        `update backup_runs set status = ?, downloaded_count = ?, local_copy_count = ?,
+        `update backup_runs set status = ?, downloaded_count = ?, local_copy_count = ?, drive_upload_count = ?,
           metadata_update_count = ?, failed_count = ?, bytes_downloaded = ?,
           bytes_transferred = ?, completed_at = ?, updated_at = ? where id = ?`,
       )
@@ -1353,6 +1905,7 @@ export class LocalBackupRepository {
         status,
         Number(counts.downloaded ?? 0),
         Number(counts.copied ?? 0),
+        Number(counts.drive_uploaded ?? 0),
         Number(counts.metadata ?? 0),
         failed + terminalBlocked,
         Number(counts.bytes_downloaded ?? 0),
@@ -1373,8 +1926,8 @@ export class LocalBackupRepository {
         backupRunId: runId,
         summary:
           status === 'COMPLETED'
-            ? `Local backup completed for ${run.channelTitle}.`
-            : `Local backup completed with errors for ${run.channelTitle}.`,
+            ? `Backup completed for ${run.channelTitle}.`
+            : `Backup completed with errors for ${run.channelTitle}.`,
         severity: status === 'COMPLETED' ? 'INFO' : 'WARNING',
         createdAt: this.now(),
       });

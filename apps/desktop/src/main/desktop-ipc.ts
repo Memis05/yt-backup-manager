@@ -3,6 +3,7 @@ import type { IpcMain } from 'electron';
 import type {
   CatalogQuery,
   ChannelBackupSettingsPatch,
+  GoogleOAuthCapability,
   JobControlAction,
   PlaylistMembersQuery,
   PlaylistQuery,
@@ -17,7 +18,7 @@ import {
   type WorkerRpcClient,
 } from '@ytbm/ipc';
 
-import { isAllowedGoogleOAuthUrl } from './external-navigation';
+import { googleDriveObjectUrl, isAllowedGoogleOAuthUrl } from './external-navigation';
 
 export interface IpcHandlerRegistrar {
   handle(channel: string, handler: (event: unknown, input: unknown) => Promise<unknown>): void;
@@ -70,7 +71,7 @@ export function registerDesktopIpcHandlers(
   handle(DESKTOP_IPC_CHANNELS.beginGoogleOAuth, async (input) => {
     const result = await worker.request(
       'accounts.oauthBegin',
-      input as { accountId: string | null },
+      input as { accountId: string | null; capability: GoogleOAuthCapability },
     );
     if (result.status === 'UNAVAILABLE') return result;
     if (!isAllowedGoogleOAuthUrl(result.authorizationUrl)) {
@@ -120,6 +121,9 @@ export function registerDesktopIpcHandlers(
           destination: await worker.request('destinations.addFilesystem', { rootPath }),
         } as const);
   });
+  handle(DESKTOP_IPC_CHANNELS.addGoogleDriveDestination, async (input) =>
+    worker.request('destinations.addGoogleDrive', input as { accountId: string }),
+  );
   handle(DESKTOP_IPC_CHANNELS.destinationsList, async () =>
     worker.request('destinations.list', {}),
   );
@@ -164,6 +168,25 @@ export function registerDesktopIpcHandlers(
       } as const;
     }
   });
+  handle(DESKTOP_IPC_CHANNELS.openGoogleDriveObject, async (input) => {
+    const result = await worker.request(
+      'storage.resolveGoogleDriveObject',
+      input as { mediaCopyId: string | null; destinationId: string | null },
+    );
+    if (result.status !== 'AVAILABLE') return result;
+    try {
+      await openExternal(googleDriveObjectUrl(result.providerId));
+      return { status: 'OPENED' } as const;
+    } catch {
+      return {
+        status: 'UNAVAILABLE',
+        safeMessage: 'The Google Drive object could not be opened.',
+      } as const;
+    }
+  });
+  handle(DESKTOP_IPC_CHANNELS.dashboardSummary, async () =>
+    worker.request('dashboard.summary', {}),
+  );
   handle(DESKTOP_IPC_CHANNELS.toolDiagnostics, async () => worker.request('tools.diagnostics', {}));
 
   return () => {

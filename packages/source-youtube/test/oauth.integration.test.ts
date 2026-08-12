@@ -3,12 +3,19 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { AccountConnectionState, AccountDto, SourceErrorCode } from '@ytbm/core';
+import type {
+  AccountConnectionState,
+  AccountDto,
+  DriveCapabilityState,
+  SourceErrorCode,
+} from '@ytbm/core';
 import { EncryptedFileCredentialStore, type EncryptionAdapter } from '@ytbm/security';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   GOOGLE_OAUTH_SCOPES,
+  GOOGLE_DRIVE_FILE_SCOPE,
+  GOOGLE_DRIVE_OAUTH_SCOPES,
   GoogleAccountService,
   YOUTUBE_READONLY_SCOPE,
   type ConnectedGoogleAccountInput,
@@ -26,7 +33,10 @@ const encryption: EncryptionAdapter = {
 };
 
 class MemoryAccounts implements GoogleAccountPersistence {
-  public readonly records = new Map<string, AccountDto & { credentialRef: string }>();
+  public readonly records = new Map<
+    string,
+    AccountDto & { credentialRef: string; driveCredentialRef: string | null }
+  >();
 
   public async listAccounts(): Promise<AccountDto[]> {
     return [...this.records.values()].map((account) => this.toDto(account));
@@ -44,7 +54,9 @@ class MemoryAccounts implements GoogleAccountPersistence {
           id: account.id,
           providerAccountId: account.providerAccountId,
           credentialRef: account.credentialRef,
+          driveCredentialRef: account.driveCredentialRef,
           connectionState: account.connectionState,
+          driveConnectionState: account.capabilities.driveConnectionState,
         };
   }
 
@@ -56,14 +68,20 @@ class MemoryAccounts implements GoogleAccountPersistence {
           id: account.id,
           providerAccountId: account.providerAccountId,
           credentialRef: account.credentialRef,
+          driveCredentialRef: account.driveCredentialRef,
           connectionState: account.connectionState,
+          driveConnectionState: account.capabilities.driveConnectionState,
         };
   }
 
   public async upsertConnectedAccount(input: ConnectedGoogleAccountInput): Promise<AccountDto> {
     const existing = await this.findByProviderAccountId(input.providerAccountId);
     const id = existing?.id ?? randomUUID();
-    const account: AccountDto & { credentialRef: string } = {
+    if (input.capability === 'GOOGLE_DRIVE' && existing === null) {
+      throw new Error('Drive authorization requires an existing Google account');
+    }
+    const previous = this.records.get(id);
+    const account: AccountDto & { credentialRef: string; driveCredentialRef: string | null } = {
       id,
       provider: 'GOOGLE',
       providerAccountId: input.providerAccountId,
@@ -71,9 +89,24 @@ class MemoryAccounts implements GoogleAccountPersistence {
       displayName: input.displayName,
       avatarUrl: input.avatarUrl,
       connectionState: 'CONNECTED',
-      capabilities: { youtubeReadonly: true, grantedScopes: input.grantedScopes },
-      credentialRef: input.credentialRef,
-      connectedAt: this.records.get(id)?.connectedAt ?? input.connectedAt,
+      capabilities: {
+        youtubeReadonly: true,
+        driveFile: input.capability === 'GOOGLE_DRIVE' || previous?.capabilities.driveFile === true,
+        driveConnectionState:
+          input.capability === 'GOOGLE_DRIVE'
+            ? 'CONNECTED'
+            : (previous?.capabilities.driveConnectionState ?? 'AUTHORIZATION_REQUIRED'),
+        grantedScopes: [
+          ...new Set([...(previous?.capabilities.grantedScopes ?? []), ...input.grantedScopes]),
+        ],
+      },
+      credentialRef:
+        input.capability === 'YOUTUBE' ? input.credentialRef : (previous?.credentialRef ?? ''),
+      driveCredentialRef:
+        input.capability === 'GOOGLE_DRIVE'
+          ? input.credentialRef
+          : (previous?.driveCredentialRef ?? null),
+      connectedAt: previous?.connectedAt ?? input.connectedAt,
       lastAuthAt: input.connectedAt,
       lastErrorCode: null,
     };
@@ -93,7 +126,29 @@ class MemoryAccounts implements GoogleAccountPersistence {
     return this.toDto(updated);
   }
 
-  private toDto(account: AccountDto & { credentialRef: string }): AccountDto {
+  public async setDriveCapabilityState(
+    accountId: string,
+    state: DriveCapabilityState,
+    errorCode: SourceErrorCode | null,
+  ): Promise<AccountDto> {
+    const account = this.records.get(accountId);
+    if (account === undefined) throw new Error('Account not found');
+    const updated = {
+      ...account,
+      capabilities: {
+        ...account.capabilities,
+        driveConnectionState: state,
+        driveFile: state === 'CONNECTED' && account.driveCredentialRef !== null,
+      },
+      lastErrorCode: errorCode,
+    };
+    this.records.set(accountId, updated);
+    return this.toDto(updated);
+  }
+
+  private toDto(
+    account: AccountDto & { credentialRef: string; driveCredentialRef: string | null },
+  ): AccountDto {
     return {
       id: account.id,
       provider: account.provider,
@@ -126,6 +181,178 @@ async function callback(result: { authorizationUrl: string }, state: string): Pr
 }
 
 describe('Google installed-application OAuth', () => {
+  it('uses explicit combined consent for Drive and preserves the YouTube credential', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ytbm-oauth-drive-test-'));
+    directories.push(directory);
+    const store = new EncryptedFileCredentialStore(directory, encryption);
+    const accounts = new MemoryAccounts();
+    const account = await accounts.upsertConnectedAccount({
+      providerAccountId: 'google-drive-subject',
+      email: 'drive@example.test',
+      displayName: 'Drive Owner',
+      avatarUrl: null,
+      credentialRef: 'google-oauth:youtube-existing',
+      grantedScopes: [...GOOGLE_OAUTH_SCOPES],
+      capability: 'YOUTUBE',
+      connectedAt: 1,
+    });
+    await store.set('google-oauth:youtube-existing', 'existing-youtube-credential');
+    const service = new GoogleAccountService(
+      {
+        clientId: 'desktop-client.apps.googleusercontent.com',
+        clientSecret: 'desktop-client-secret',
+      },
+      accounts,
+      store,
+      async (input) => {
+        const url = new URL(input.toString());
+        if (url.pathname === '/token') {
+          return Response.json({
+            access_token: 'drive-access-secret',
+            refresh_token: 'drive-refresh-secret',
+            expires_in: 3_600,
+            token_type: 'Bearer',
+            scope: GOOGLE_DRIVE_OAUTH_SCOPES.join(' '),
+          });
+        }
+        return Response.json({
+          sub: 'google-drive-subject',
+          email: 'drive@example.test',
+          name: 'Drive Owner',
+        });
+      },
+    );
+    services.push(service);
+
+    const started = await service.beginConnection(account.id, 'GOOGLE_DRIVE');
+    if (started.status !== 'STARTED') throw new Error('Drive OAuth did not start');
+    const authorization = new URL(started.authorizationUrl);
+    expect(authorization.searchParams.get('scope')?.split(' ')).toEqual(GOOGLE_DRIVE_OAUTH_SCOPES);
+    expect(authorization.searchParams.get('scope')).toContain(GOOGLE_DRIVE_FILE_SCOPE);
+    await expect(
+      callback(started, authorization.searchParams.get('state')!),
+    ).resolves.toMatchObject({ status: 200 });
+
+    expect(service.getFlowStatus(started.flowId)).toMatchObject({
+      capability: 'GOOGLE_DRIVE',
+      status: 'COMPLETED',
+      account: {
+        id: account.id,
+        capabilities: { driveFile: true, driveConnectionState: 'CONNECTED' },
+      },
+    });
+    await expect(store.get('google-oauth:youtube-existing')).resolves.toBe(
+      'existing-youtube-credential',
+    );
+    await expect(store.get(`google-oauth:${account.id}:drive`)).resolves.toContain(
+      'drive-refresh-secret',
+    );
+  });
+
+  it('rejects a mismatched Drive identity without replacing working credentials', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ytbm-oauth-drive-mismatch-test-'));
+    directories.push(directory);
+    const store = new EncryptedFileCredentialStore(directory, encryption);
+    const accounts = new MemoryAccounts();
+    const account = await accounts.upsertConnectedAccount({
+      providerAccountId: 'expected-subject',
+      email: 'expected@example.test',
+      displayName: null,
+      avatarUrl: null,
+      credentialRef: 'google-oauth:expected',
+      grantedScopes: [...GOOGLE_OAUTH_SCOPES],
+      capability: 'YOUTUBE',
+      connectedAt: 1,
+    });
+    await store.set('google-oauth:expected', 'working-youtube-credential');
+    const service = new GoogleAccountService(
+      {
+        clientId: 'desktop-client.apps.googleusercontent.com',
+        clientSecret: 'desktop-client-secret',
+      },
+      accounts,
+      store,
+      async (input) => {
+        const url = new URL(input.toString());
+        return url.pathname === '/token'
+          ? Response.json({
+              access_token: 'mismatched-access',
+              refresh_token: 'mismatched-refresh',
+              expires_in: 3_600,
+              token_type: 'Bearer',
+              scope: GOOGLE_DRIVE_OAUTH_SCOPES.join(' '),
+            })
+          : Response.json({ sub: 'different-subject', email: 'other@example.test' });
+      },
+    );
+    services.push(service);
+
+    const started = await service.beginConnection(account.id, 'GOOGLE_DRIVE');
+    if (started.status !== 'STARTED') throw new Error('Drive OAuth did not start');
+    const authorization = new URL(started.authorizationUrl);
+    const response = await callback(started, authorization.searchParams.get('state')!);
+
+    expect(response.status).toBe(500);
+    expect(service.getFlowStatus(started.flowId)).toMatchObject({
+      status: 'FAILED',
+      safeMessage: expect.stringContaining('does not match'),
+    });
+    await expect(store.get('google-oauth:expected')).resolves.toBe('working-youtube-credential');
+    await expect(store.get(`google-oauth:${account.id}:drive`)).resolves.toBeNull();
+    await expect(accounts.listAccounts()).resolves.toEqual([
+      expect.objectContaining({
+        connectionState: 'CONNECTED',
+        capabilities: expect.objectContaining({ driveFile: false }),
+      }),
+    ]);
+  });
+
+  it('preserves the working YouTube credential when Drive consent is cancelled', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ytbm-oauth-drive-cancel-test-'));
+    directories.push(directory);
+    const store = new EncryptedFileCredentialStore(directory, encryption);
+    const accounts = new MemoryAccounts();
+    const account = await accounts.upsertConnectedAccount({
+      providerAccountId: 'cancel-subject',
+      email: 'cancel@example.test',
+      displayName: null,
+      avatarUrl: null,
+      credentialRef: 'google-oauth:cancel-existing',
+      grantedScopes: [...GOOGLE_OAUTH_SCOPES],
+      capability: 'YOUTUBE',
+      connectedAt: 1,
+    });
+    await store.set('google-oauth:cancel-existing', 'working-youtube-credential');
+    let providerCalls = 0;
+    const service = new GoogleAccountService(
+      {
+        clientId: 'desktop-client.apps.googleusercontent.com',
+        clientSecret: 'desktop-client-secret',
+      },
+      accounts,
+      store,
+      async () => {
+        providerCalls += 1;
+        return new Response('{}', { status: 500 });
+      },
+    );
+    services.push(service);
+
+    const started = await service.beginConnection(account.id, 'GOOGLE_DRIVE');
+    if (started.status !== 'STARTED') throw new Error('Drive OAuth did not start');
+    const authorization = new URL(started.authorizationUrl);
+    const redirect = new URL(authorization.searchParams.get('redirect_uri')!);
+    redirect.searchParams.set('state', authorization.searchParams.get('state')!);
+    redirect.searchParams.set('error', 'access_denied');
+    await expect(fetch(redirect)).resolves.toMatchObject({ status: 400 });
+
+    expect(providerCalls).toBe(0);
+    await expect(store.get('google-oauth:cancel-existing')).resolves.toBe(
+      'working-youtube-credential',
+    );
+    await expect(store.get(`google-oauth:${account.id}:drive`)).resolves.toBeNull();
+  });
+
   it('does not open a callback listener when the client secret is missing', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'ytbm-oauth-config-test-'));
     directories.push(directory);
@@ -295,6 +522,7 @@ describe('Google installed-application OAuth', () => {
       avatarUrl: null,
       credentialRef: 'google-oauth:revoked',
       grantedScopes: [...GOOGLE_OAUTH_SCOPES],
+      capability: 'YOUTUBE',
       connectedAt: 1,
     });
     await store.set(

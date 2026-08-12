@@ -16,6 +16,8 @@ const SENSITIVE_KEYS = new Set([
   'password',
   'passphrase',
   'sessiontoken',
+  'sessionuri',
+  'uploadsessionuri',
   'sessioncookie',
   'browsercookies',
 ]);

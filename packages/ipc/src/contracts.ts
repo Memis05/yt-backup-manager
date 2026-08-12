@@ -9,6 +9,7 @@ import {
   ChannelBackupSettingsPatchSchema,
   ChannelsListResultSchema,
   DatabaseHealthSchema,
+  DashboardSummarySchema,
   FoundationStatusSchema,
   BackupRunsListResultSchema,
   BackupStartResultSchema,
@@ -20,6 +21,7 @@ import {
   OAuthBeginResultSchema,
   OAuthBeginWorkerResultSchema,
   OAuthFlowDtoSchema,
+  GoogleOAuthCapabilitySchema,
   OpenVerifiedCopyFolderResultSchema,
   PlaylistMembersQuerySchema,
   PlaylistMembersResultSchema,
@@ -30,6 +32,8 @@ import {
   QueueQuerySchema,
   QueueSnapshotSchema,
   ResolveVerifiedCopyFolderResultSchema,
+  ResolveGoogleDriveObjectResultSchema,
+  OpenGoogleDriveObjectResultSchema,
   RunControlActionSchema,
   SettingsPatchSchema,
   SourceSyncJobDtoSchema,
@@ -70,7 +74,12 @@ export const WorkerRpcContracts = {
     result: AppSettingsSchema,
   },
   'accounts.oauthBegin': {
-    params: z.object({ accountId: z.string().uuid().nullable() }).strict(),
+    params: z
+      .object({
+        accountId: z.string().uuid().nullable(),
+        capability: GoogleOAuthCapabilitySchema,
+      })
+      .strict(),
     result: OAuthBeginWorkerResultSchema,
   },
   'accounts.oauthConfigure': {
@@ -132,6 +141,10 @@ export const WorkerRpcContracts = {
     params: z.object({ rootPath: z.string().trim().min(1).max(1_024) }).strict(),
     result: DestinationDtoSchema,
   },
+  'destinations.addGoogleDrive': {
+    params: z.object({ accountId: z.string().uuid() }).strict(),
+    result: DestinationDtoSchema,
+  },
   'destinations.list': {
     params: EmptyParamsSchema,
     result: DestinationsListResultSchema,
@@ -175,6 +188,20 @@ export const WorkerRpcContracts = {
   'media.resolveVerifiedFolder': {
     params: z.object({ mediaCopyId: z.string().uuid() }).strict(),
     result: ResolveVerifiedCopyFolderResultSchema,
+  },
+  'storage.resolveGoogleDriveObject': {
+    params: z
+      .object({
+        mediaCopyId: z.string().uuid().nullable(),
+        destinationId: z.string().uuid().nullable(),
+      })
+      .strict()
+      .refine((value) => (value.mediaCopyId === null) !== (value.destinationId === null)),
+    result: ResolveGoogleDriveObjectResultSchema,
+  },
+  'dashboard.summary': {
+    params: EmptyParamsSchema,
+    result: DashboardSummarySchema,
   },
   'tools.diagnostics': {
     params: EmptyParamsSchema,
@@ -300,6 +327,7 @@ export const DESKTOP_IPC_CHANNELS = {
   playlistsQuery: 'ytbm:playlists-query',
   playlistMembers: 'ytbm:playlists-members',
   chooseFilesystemDestination: 'ytbm:destinations-choose-filesystem',
+  addGoogleDriveDestination: 'ytbm:destinations-add-google-drive',
   destinationsList: 'ytbm:destinations-list',
   disableDestination: 'ytbm:destinations-disable',
   channelBackupSettings: 'ytbm:backup-channel-settings',
@@ -311,6 +339,8 @@ export const DESKTOP_IPC_CHANNELS = {
   controlJob: 'ytbm:jobs-control',
   mediaBackupDetails: 'ytbm:media-backup-details',
   openVerifiedCopyFolder: 'ytbm:media-open-verified-folder',
+  openGoogleDriveObject: 'ytbm:storage-open-google-drive-object',
+  dashboardSummary: 'ytbm:dashboard-summary',
   toolDiagnostics: 'ytbm:tools-diagnostics',
 } as const;
 
@@ -330,7 +360,12 @@ const DesktopIpcContracts = {
     output: z.object({ opened: z.literal(true) }).strict(),
   },
   [DESKTOP_IPC_CHANNELS.beginGoogleOAuth]: {
-    input: z.object({ accountId: z.string().uuid().nullable() }).strict(),
+    input: z
+      .object({
+        accountId: z.string().uuid().nullable(),
+        capability: GoogleOAuthCapabilitySchema,
+      })
+      .strict(),
     output: OAuthBeginResultSchema,
   },
   [DESKTOP_IPC_CHANNELS.oauthStatus]: {
@@ -386,6 +421,10 @@ const DesktopIpcContracts = {
       z.object({ status: z.literal('CANCELLED') }).strict(),
     ]),
   },
+  [DESKTOP_IPC_CHANNELS.addGoogleDriveDestination]: {
+    input: z.object({ accountId: z.string().uuid() }).strict(),
+    output: DestinationDtoSchema,
+  },
   [DESKTOP_IPC_CHANNELS.destinationsList]: {
     input: EmptyParamsSchema,
     output: DestinationsListResultSchema,
@@ -429,6 +468,20 @@ const DesktopIpcContracts = {
   [DESKTOP_IPC_CHANNELS.openVerifiedCopyFolder]: {
     input: z.object({ mediaCopyId: z.string().uuid() }).strict(),
     output: OpenVerifiedCopyFolderResultSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.openGoogleDriveObject]: {
+    input: z
+      .object({
+        mediaCopyId: z.string().uuid().nullable(),
+        destinationId: z.string().uuid().nullable(),
+      })
+      .strict()
+      .refine((value) => (value.mediaCopyId === null) !== (value.destinationId === null)),
+    output: OpenGoogleDriveObjectResultSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.dashboardSummary]: {
+    input: EmptyParamsSchema,
+    output: DashboardSummarySchema,
   },
   [DESKTOP_IPC_CHANNELS.toolDiagnostics]: {
     input: EmptyParamsSchema,

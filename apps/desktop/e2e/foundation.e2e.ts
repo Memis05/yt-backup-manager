@@ -19,7 +19,7 @@ async function stopWorker(userData: string, localData: string): Promise<void> {
   }
 }
 
-test('packaged desktop renders the Phase 3 local backup shell', async () => {
+test('packaged desktop renders the Phase 4 destination-aware backup shell', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'ytbm-electron-e2e-'));
   const userData = join(directory, 'user-data');
   const localData = join(directory, 'local-data');
@@ -67,27 +67,32 @@ test('packaged desktop renders the Phase 3 local backup shell', async () => {
         { cause: error },
       );
     });
-    await expect(page.getByRole('heading', { name: 'Accounts' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Backup health' })).toBeVisible();
+    await page.getByRole('button', { name: 'Accounts' }).click();
     await expect(page.getByRole('button', { name: 'Connect Google' })).toBeVisible();
     await expect(page.getByText('Worker ready')).toBeVisible();
     await page.getByRole('button', { name: 'Library' }).click();
     await expect(page.getByRole('searchbox', { name: 'Search library' })).toBeVisible();
     await page.getByRole('button', { name: 'Storage' }).click();
-    await expect(page.getByRole('heading', { name: 'Local backup destinations' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Choose folder…' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Backup destinations' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Add local folder…' })).toBeVisible();
     await electronApp.evaluate(({ dialog }, selectedPath) => {
       Object.defineProperty(dialog, 'showOpenDialog', {
         configurable: true,
         value: async () => ({ canceled: false, filePaths: [selectedPath] }),
       });
     }, backupRoot);
-    await page.getByRole('button', { name: 'Choose folder…' }).click();
+    await page.getByRole('button', { name: 'Add local folder…' }).click();
     await expect(page.getByRole('heading', { name: backupRoot })).toBeVisible();
     await expect(page.getByText('AVAILABLE', { exact: true })).toBeVisible();
     await expect(page.getByLabel('Global default quality')).toHaveValue('MAX_1080P');
     await expect(page.getByLabel('Managed tool diagnostics').getByText('Ready')).toHaveCount(2);
+    await expect(
+      page.getByLabel('Managed tool diagnostics').getByText('Google Drive'),
+    ).toBeVisible();
     await page.getByRole('button', { name: 'Backup' }).click();
-    await expect(page.getByRole('heading', { name: 'Local backup' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Channel backup' })).toBeVisible();
     await expect(page.getByText('No backup history')).toBeVisible();
     await page.getByRole('button', { name: 'Queue' }).click();
     await expect(page.getByRole('heading', { name: 'Backup activity' })).toBeVisible();

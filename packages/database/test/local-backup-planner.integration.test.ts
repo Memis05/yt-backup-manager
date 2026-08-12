@@ -78,7 +78,165 @@ function markVerified(database: WorkerDatabase, mediaId: string, destinationId: 
   return copyId;
 }
 
+function addDriveDestination(
+  database: WorkerDatabase,
+  repository: LocalBackupRepository,
+): ReturnType<LocalBackupRepository['addGoogleDriveDestination']> {
+  const accountId = crypto.randomUUID();
+  database.sqlite
+    .prepare(
+      `insert into accounts (
+        id, provider, provider_account_id, email, credential_ref, drive_credential_ref,
+        capabilities_json, connection_state, connected_at, last_auth_at, created_at, updated_at
+      ) values (?, 'GOOGLE', ?, 'drive@example.test', ?, ?, ?, 'CONNECTED', 100, 100, 100, 100)`,
+    )
+    .run(
+      accountId,
+      `drive-subject-${accountId}`,
+      `google-oauth:${accountId}`,
+      `google-oauth:${accountId}:drive`,
+      JSON.stringify({
+        youtubeReadonly: true,
+        driveFile: true,
+        driveConnectionState: 'CONNECTED',
+        grantedScopes: [
+          'https://www.googleapis.com/auth/youtube.readonly',
+          'https://www.googleapis.com/auth/drive.file',
+        ],
+      }),
+    );
+  return repository.addGoogleDriveDestination(accountId);
+}
+
+function markDriveVerified(
+  database: WorkerDatabase,
+  mediaId: string,
+  destinationId: string,
+): string {
+  const copyId = markVerified(database, mediaId, destinationId);
+  database.sqlite
+    .prepare(
+      `update media_copies set provider_file_id = ?, relative_path = null,
+        verification_strength = 'PROVIDER_METADATA_SIZE' where id = ?`,
+    )
+    .run(`drive-file-${copyId}`, copyId);
+  return copyId;
+}
+
 describe('local backup planner', () => {
+  it('rejects a backup plan with zero destinations', async () => {
+    const { repository, channelId, directory } = await fixture();
+    repository.setChannelSettings(channelId, null, [], 'MAX_1080P');
+
+    expect(() => repository.planBackup(channelId, 'MAX_1080P', join(directory, 'staging'))).toThrow(
+      /destination/i,
+    );
+  });
+
+  it('plans a Drive-only run without a permanent local copy', async () => {
+    const { database, repository, channelId, directory } = await fixture();
+    const drive = addDriveDestination(database, repository);
+    repository.setChannelSettings(channelId, null, [drive.id], 'MAX_1080P');
+
+    repository.planBackup(channelId, 'MAX_1080P', join(directory, 'staging'));
+
+    const jobs = database.sqlite
+      .prepare('select job_type from jobs order by created_at, job_type')
+      .all() as Array<{ job_type: string }>;
+    const types = jobs.map((job) => job.job_type);
+    expect(types).toContain('DOWNLOAD_MEDIA');
+    expect(types).toContain('UPLOAD_TO_GOOGLE_DRIVE');
+    expect(types).toContain('VERIFY_GOOGLE_DRIVE_COPY');
+    expect(types).toContain('CLEANUP_STAGING');
+    expect(types).not.toContain('COPY_TO_FILESYSTEM');
+  });
+
+  it('acquires media once and branches to local and Drive destinations', async () => {
+    const { database, repository, channelId, destinationA, directory } = await fixture();
+    const drive = addDriveDestination(database, repository);
+    repository.setChannelSettings(channelId, null, [destinationA.id, drive.id], 'MAX_1080P');
+
+    repository.planBackup(channelId, 'MAX_1080P', join(directory, 'staging'));
+
+    const count = (jobType: string): number =>
+      (
+        database.sqlite
+          .prepare('select count(*) as count from jobs where job_type = ?')
+          .get(jobType) as { count: number }
+      ).count;
+    expect(count('DOWNLOAD_MEDIA')).toBe(1);
+    expect(count('COPY_TO_FILESYSTEM')).toBe(1);
+    expect(count('UPLOAD_TO_GOOGLE_DRIVE')).toBe(1);
+  });
+
+  it('uploads a verified local copy to Drive without contacting YouTube', async () => {
+    const { database, repository, channelId, mediaId, destinationA, directory } = await fixture();
+    const sourceCopyId = markVerified(database, mediaId, destinationA.id);
+    const drive = addDriveDestination(database, repository);
+    repository.setChannelSettings(channelId, null, [destinationA.id, drive.id], 'MAX_1080P');
+
+    repository.planBackup(channelId, 'MAX_1080P', join(directory, 'staging'));
+
+    expect(
+      database.sqlite
+        .prepare("select count(*) as count from jobs where job_type = 'DOWNLOAD_MEDIA'")
+        .get(),
+    ).toEqual({ count: 0 });
+    const upload = database.sqlite
+      .prepare("select payload_json from jobs where job_type = 'UPLOAD_TO_GOOGLE_DRIVE'")
+      .get() as { payload_json: string };
+    expect(JSON.parse(upload.payload_json)).toMatchObject({ sourceCopyId });
+  });
+
+  it('downloads a verified Drive copy to staging before repairing local storage', async () => {
+    const { database, repository, channelId, mediaId, destinationA, directory } = await fixture();
+    const drive = addDriveDestination(database, repository);
+    const sourceCopyId = markDriveVerified(database, mediaId, drive.id);
+    repository.setChannelSettings(channelId, null, [destinationA.id, drive.id], 'MAX_1080P');
+
+    repository.planBackup(channelId, 'MAX_1080P', join(directory, 'staging'));
+
+    expect(
+      database.sqlite
+        .prepare("select count(*) as count from jobs where job_type = 'DOWNLOAD_MEDIA'")
+        .get(),
+    ).toEqual({ count: 0 });
+    const download = database.sqlite
+      .prepare("select payload_json from jobs where job_type = 'DOWNLOAD_FROM_GOOGLE_DRIVE'")
+      .get() as { payload_json: string };
+    expect(JSON.parse(download.payload_json)).toMatchObject({ sourceCopyId });
+    expect(
+      database.sqlite
+        .prepare("select count(*) as count from jobs where job_type = 'COPY_TO_FILESYSTEM'")
+        .get(),
+    ).toEqual({ count: 1 });
+  });
+
+  it('adds a second Drive destination without a YouTube download', async () => {
+    const { database, repository, channelId, mediaId, directory } = await fixture();
+    const driveA = addDriveDestination(database, repository);
+    const driveB = addDriveDestination(database, repository);
+    const sourceCopyId = markDriveVerified(database, mediaId, driveA.id);
+    repository.setChannelSettings(channelId, null, [driveA.id, driveB.id], 'MAX_1080P');
+
+    repository.planBackup(channelId, 'MAX_1080P', join(directory, 'staging'));
+
+    expect(
+      database.sqlite
+        .prepare("select count(*) as count from jobs where job_type = 'DOWNLOAD_MEDIA'")
+        .get(),
+    ).toEqual({ count: 0 });
+    const download = database.sqlite
+      .prepare("select payload_json from jobs where job_type = 'DOWNLOAD_FROM_GOOGLE_DRIVE'")
+      .get() as { payload_json: string };
+    expect(JSON.parse(download.payload_json)).toMatchObject({ sourceCopyId });
+    expect(
+      database.sqlite
+        .prepare("select count(*) as count from jobs where job_type = 'UPLOAD_TO_GOOGLE_DRIVE'")
+        .get(),
+    ).toEqual({ count: 1 });
+  });
+
   it('creates an independent durable acquisition DAG for each backup run', async () => {
     const { database, repository, channelId, directory } = await fixture();
 
