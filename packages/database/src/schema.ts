@@ -306,6 +306,8 @@ export const mediaCopies = sqliteTable(
     fps: real('fps'),
     bytes: integer('bytes'),
     sha256: text('sha256'),
+    qualityProfile: text('quality_profile'),
+    contentGeneration: text('content_generation'),
     status: text('status').notNull().default('PENDING'),
     verifiedAt: integer('verified_at'),
     lastCheckedAt: integer('last_checked_at'),
@@ -339,6 +341,7 @@ export const mediaArtifacts = sqliteTable(
     providerFileId: text('provider_file_id'),
     bytes: integer('bytes'),
     sha256: text('sha256'),
+    contentGeneration: text('content_generation'),
     status: text('status').notNull(),
     verifiedAt: integer('verified_at'),
     lastCheckedAt: integer('last_checked_at'),
@@ -438,6 +441,7 @@ export const stagingArtifacts = sqliteTable('staging_artifacts', {
   bytes: integer('bytes'),
   sha256: text('sha256'),
   state: text('state').notNull(),
+  generation: text('generation'),
   ...timestamps(),
 });
 

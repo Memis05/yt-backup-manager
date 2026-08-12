@@ -14,6 +14,7 @@ export interface RuntimePaths {
   logs: string;
   credentials: string;
   rpcToken: string;
+  staging: string;
 }
 
 export interface RuntimeConfig {
@@ -21,6 +22,8 @@ export interface RuntimeConfig {
   paths: RuntimePaths;
   googleOAuthClientId: string | null;
   googleOAuthClientSecret: string | null;
+  ytDlpExecutableOverride: string | null;
+  ffmpegExecutableOverride: string | null;
 }
 
 export interface RuntimePathDefaults {
@@ -85,6 +88,15 @@ export function loadRuntimeConfig(defaults: RuntimePathDefaults): RuntimeConfig 
       logs: join(localData, 'logs'),
       credentials: join(userData, 'credentials'),
       rpcToken: join(userData, 'worker-rpc.token'),
+      staging: optionalPath(process.env.YTBM_STAGING_PATH, join(localData, 'staging')),
     },
+    ytDlpExecutableOverride:
+      process.env.YTBM_YTDLP_PATH === undefined || process.env.YTBM_YTDLP_PATH.trim() === ''
+        ? null
+        : resolve(process.env.YTBM_YTDLP_PATH),
+    ffmpegExecutableOverride:
+      process.env.YTBM_FFMPEG_PATH === undefined || process.env.YTBM_FFMPEG_PATH.trim() === ''
+        ? null
+        : resolve(process.env.YTBM_FFMPEG_PATH),
   };
 }

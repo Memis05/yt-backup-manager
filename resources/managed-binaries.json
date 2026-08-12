@@ -1,0 +1,10 @@
+{
+  "ytDlp": {
+    "version": "2026.07.04",
+    "sha256": "52fe3c26dcf71fbdc85b528589020bb0b8e383155cfa81b64dd447bbe35e24b8"
+  },
+  "ffmpeg": {
+    "version": "2026-02-23-git-7b15039cdb",
+    "sha256": "b492ebf507904d656d0440dfa10beec761f387efebb061e9fbcb817c53873d2b"
+  }
+}

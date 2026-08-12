@@ -15,11 +15,17 @@
   "dependencies": {
     "@ytbm/core": "workspace:*",
     "@ytbm/database": "workspace:*",
+    "@ytbm/download-ytdlp": "workspace:*",
+    "@ytbm/integrity": "workspace:*",
     "@ytbm/ipc": "workspace:*",
     "@ytbm/job-engine": "workspace:*",
+    "@ytbm/manifest": "workspace:*",
+    "@ytbm/media-ffmpeg": "workspace:*",
     "@ytbm/security": "workspace:*",
     "@ytbm/shared": "workspace:*",
     "@ytbm/source-youtube": "workspace:*",
+    "@ytbm/storage-core": "workspace:*",
+    "@ytbm/storage-filesystem": "workspace:*",
     "better-sqlite3": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
@@ -48,6 +54,16 @@
     ],
     "asarUnpack": [
       "**/*.node"
+    ],
+    "extraResources": [
+      {
+        "from": "../../resources/yt-dlp/yt-dlp.exe",
+        "to": "yt-dlp/yt-dlp.exe"
+      },
+      {
+        "from": "../../resources/ffmpeg/ffmpeg.exe",
+        "to": "ffmpeg/ffmpeg.exe"
+      }
     ],
     "win": {
       "target": [

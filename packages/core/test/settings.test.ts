@@ -27,7 +27,7 @@ describe('SettingsService', () => {
     expect(await service.get()).toEqual(DEFAULT_APP_SETTINGS);
     await expect(service.update({ startMinimized: true })).resolves.toMatchObject({
       startMinimized: true,
-      defaultQualityProfile: 'UP_TO_1080P',
+      defaultQualityProfile: 'MAX_1080P',
     });
     expect(repository.value).toMatchObject({ startMinimized: true });
   });
@@ -45,5 +45,14 @@ describe('SettingsService', () => {
     repository.value = { startMinimized: 'yes' };
 
     await expect(new SettingsService(repository).get()).rejects.toThrow();
+  });
+
+  it('normalizes legacy quality profile values', async () => {
+    const repository = new MemorySettingsRepository();
+    repository.value = { ...DEFAULT_APP_SETTINGS, defaultQualityProfile: 'UP_TO_1080P' };
+
+    await expect(new SettingsService(repository).get()).resolves.toMatchObject({
+      defaultQualityProfile: 'MAX_1080P',
+    });
   });
 });

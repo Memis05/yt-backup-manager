@@ -3,7 +3,8 @@
 A local-first Windows desktop application for durable, incremental backups of
 YouTube channels owned or managed by the signed-in user.
 
-This repository contains the Phase 1 foundation and the Phase 2 read-only source catalog:
+This repository contains the Phase 1 foundation, Phase 2 read-only source catalog,
+and Phase 3 durable local backup acquisition:
 
 - an Electron, React, Vite, and Tailwind desktop shell;
 - a separate headless worker with user-scoped singleton protection;
@@ -19,6 +20,10 @@ This repository contains the Phase 1 foundation and the Phase 2 read-only source
 - paginated YouTube channel, upload, playlist, and playlist-membership sync;
 - idempotent catalog reconciliation, metadata history, Activity, and local FTS;
 - functional Accounts, Channels, Library, and Playlists desktop views.
+- managed yt-dlp and FFmpeg adapters with safe, non-shell child processes;
+- a leased, dependency-aware, resumable SQLite job engine;
+- staging, streaming SHA-256 verification, safe local copies, and atomic recovery manifests;
+- Storage, Backup, Queue, history, progress, and media-copy detail views.
 
 ## Requirements
 
@@ -36,10 +41,14 @@ corepack pnpm typecheck
 corepack pnpm test
 corepack pnpm build
 corepack pnpm package:dir
+corepack pnpm test:package-smoke
 corepack pnpm test:e2e
 ```
 
-`test:e2e` runs against the unpacked package produced by `package:dir`.
+`package:dir` verifies the pinned managed binary versions and hashes before
+building. `test:package-smoke` executes both tools from their packaged resource
+paths and starts the packaged headless worker. `test:e2e` runs against the same
+unpacked application.
 
 Run the desktop application in development mode with:
 
@@ -68,11 +77,12 @@ only `openid`, `email`, `profile`, and
 ephemeral port on `127.0.0.1`; no redirect URI port is hard-coded.
 
 See `docs/PHASE-2-SOURCE-CATALOG.md` for source synchronization and
-classification details.
+classification details. See `docs/PHASE-3-LOCAL-BACKUP.md` for the local backup
+architecture, recovery rules, and manual real-media smoke procedure.
 
 Runtime data defaults to the current Windows user's application-data folders.
 Development and tests can override paths with the variables documented in
 `.env.example`.
 
-Downloads, destinations, Google Drive, scheduling registration, manifests,
-integrity, and backup execution remain intentionally deferred to later phases.
+Google Drive transfer, scheduled backup registration, managed-tool auto-update,
+and full disaster-recovery import remain intentionally deferred to later phases.

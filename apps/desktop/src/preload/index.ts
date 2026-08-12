@@ -4,38 +4,66 @@ import {
   AccountDtoSchema,
   AccountsListResultSchema,
   AppSettingsSchema,
+  BackupRunsListResultSchema,
+  BackupStartResultSchema,
   CatalogQuerySchema,
   ChannelDtoSchema,
+  ChannelBackupSettingsDtoSchema,
+  ChannelBackupSettingsPatchSchema,
   ChannelsListResultSchema,
+  DestinationsListResultSchema,
+  DestinationDtoSchema,
   FoundationStatusSchema,
   LibraryQueryResultSchema,
+  MediaBackupDetailsSchema,
   OAuthBeginResultSchema,
   OAuthFlowDtoSchema,
+  OpenVerifiedCopyFolderResultSchema,
   PlaylistMembersQuerySchema,
   PlaylistMembersResultSchema,
   PlaylistQueryResultSchema,
   PlaylistQuerySchema,
   RendererSettingsPatchSchema,
+  QueueJobDtoSchema,
+  QueueQuerySchema,
+  QueueSnapshotSchema,
   SourceSyncJobDtoSchema,
+  ToolDiagnosticsSchema,
   type AccountDto,
   type AppSettings,
+  type BackupRunDto,
+  type BackupStartResult,
   type CatalogQuery,
   type ChannelDto,
+  type ChannelBackupSettingsDto,
+  type ChannelBackupSettingsPatch,
+  type DestinationDto,
   type FoundationStatus,
   type LibraryQueryResult,
+  type MediaBackupDetails,
   type OAuthBeginResult,
   type OAuthFlowDto,
+  type OpenVerifiedCopyFolderResult,
   type PlaylistMembersQuery,
   type PlaylistMembersResult,
   type PlaylistQuery,
   type PlaylistQueryResult,
+  type JobControlAction,
+  type QueueJobDto,
+  type QueueQuery,
+  type QueueSnapshot,
+  type RunControlAction,
   type SourceSyncJobDto,
+  type ToolDiagnostics,
 } from '@ytbm/core';
 import { DESKTOP_IPC_CHANNELS } from '@ytbm/ipc/renderer';
 
 export interface YouTubeBackupManagerApi {
   getFoundationStatus(): Promise<FoundationStatus>;
   updateStartMinimized(startMinimized: boolean): Promise<AppSettings>;
+  updateDefaultQuality(
+    defaultQualityProfile: AppSettings['defaultQualityProfile'],
+  ): Promise<AppSettings>;
   openLogFolder(): Promise<void>;
   listAccounts(): Promise<AccountDto[]>;
   beginGoogleOAuth(accountId?: string | null): Promise<OAuthBeginResult>;
@@ -52,6 +80,19 @@ export interface YouTubeBackupManagerApi {
   queryLibrary(query: CatalogQuery): Promise<LibraryQueryResult>;
   queryPlaylists(query: PlaylistQuery): Promise<PlaylistQueryResult>;
   queryPlaylistMembers(query: PlaylistMembersQuery): Promise<PlaylistMembersResult>;
+  addFilesystemDestination(): Promise<DestinationDto | null>;
+  listDestinations(): Promise<DestinationDto[]>;
+  disableDestination(destinationId: string): Promise<void>;
+  getChannelBackupSettings(channelId: string): Promise<ChannelBackupSettingsDto>;
+  updateChannelBackupSettings(input: ChannelBackupSettingsPatch): Promise<ChannelBackupSettingsDto>;
+  startBackup(channelId: string): Promise<BackupStartResult>;
+  listBackupRuns(): Promise<BackupRunDto[]>;
+  controlBackupRun(runId: string, action: RunControlAction): Promise<void>;
+  getQueueSnapshot(query: QueueQuery): Promise<QueueSnapshot>;
+  controlJob(jobId: string, action: JobControlAction): Promise<QueueJobDto>;
+  getMediaBackupDetails(mediaItemId: string): Promise<MediaBackupDetails>;
+  openVerifiedCopyFolder(mediaCopyId: string): Promise<OpenVerifiedCopyFolderResult>;
+  getToolDiagnostics(): Promise<ToolDiagnostics>;
 }
 
 const api: YouTubeBackupManagerApi = Object.freeze({
@@ -61,6 +102,13 @@ const api: YouTubeBackupManagerApi = Object.freeze({
   },
   async updateStartMinimized(startMinimized: boolean): Promise<AppSettings> {
     const input = RendererSettingsPatchSchema.parse({ startMinimized });
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.updateSettings, input);
+    return AppSettingsSchema.parse(response);
+  },
+  async updateDefaultQuality(
+    defaultQualityProfile: AppSettings['defaultQualityProfile'],
+  ): Promise<AppSettings> {
+    const input = RendererSettingsPatchSchema.parse({ defaultQualityProfile });
     const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.updateSettings, input);
     return AppSettingsSchema.parse(response);
   },
@@ -133,6 +181,80 @@ const api: YouTubeBackupManagerApi = Object.freeze({
     const input = PlaylistMembersQuerySchema.parse(query);
     const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.playlistMembers, input);
     return PlaylistMembersResultSchema.parse(response);
+  },
+  async addFilesystemDestination(): Promise<DestinationDto | null> {
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.chooseFilesystemDestination, {});
+    if (response?.status === 'CANCELLED') return null;
+    if (response?.status === 'ADDED') {
+      return DestinationDtoSchema.parse(response.destination);
+    }
+    throw new Error('The destination picker returned an invalid result.');
+  },
+  async listDestinations(): Promise<DestinationDto[]> {
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.destinationsList, {});
+    return DestinationsListResultSchema.parse(response).destinations;
+  },
+  async disableDestination(destinationId: string): Promise<void> {
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.disableDestination, {
+      destinationId,
+    });
+    if (response?.disabled !== true) throw new Error('The local destination was not disabled.');
+  },
+  async getChannelBackupSettings(channelId: string): Promise<ChannelBackupSettingsDto> {
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.channelBackupSettings, {
+      channelId,
+    });
+    return ChannelBackupSettingsDtoSchema.parse(response);
+  },
+  async updateChannelBackupSettings(
+    inputValue: ChannelBackupSettingsPatch,
+  ): Promise<ChannelBackupSettingsDto> {
+    const input = ChannelBackupSettingsPatchSchema.parse(inputValue);
+    const response = await ipcRenderer.invoke(
+      DESKTOP_IPC_CHANNELS.updateChannelBackupSettings,
+      input,
+    );
+    return ChannelBackupSettingsDtoSchema.parse(response);
+  },
+  async startBackup(channelId: string): Promise<BackupStartResult> {
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.startBackup, { channelId });
+    return BackupStartResultSchema.parse(response);
+  },
+  async listBackupRuns(): Promise<BackupRunDto[]> {
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.backupRuns, {});
+    return BackupRunsListResultSchema.parse(response).runs;
+  },
+  async controlBackupRun(runId: string, action: RunControlAction): Promise<void> {
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.controlBackupRun, {
+      runId,
+      action,
+    });
+    if (response?.accepted !== true) throw new Error('The backup run control was not accepted.');
+  },
+  async getQueueSnapshot(queryValue: QueueQuery): Promise<QueueSnapshot> {
+    const query = QueueQuerySchema.parse(queryValue);
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.queueSnapshot, query);
+    return QueueSnapshotSchema.parse(response);
+  },
+  async controlJob(jobId: string, action: JobControlAction): Promise<QueueJobDto> {
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.controlJob, { jobId, action });
+    return QueueJobDtoSchema.parse(response);
+  },
+  async getMediaBackupDetails(mediaItemId: string): Promise<MediaBackupDetails> {
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.mediaBackupDetails, {
+      mediaItemId,
+    });
+    return MediaBackupDetailsSchema.parse(response);
+  },
+  async openVerifiedCopyFolder(mediaCopyId: string): Promise<OpenVerifiedCopyFolderResult> {
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.openVerifiedCopyFolder, {
+      mediaCopyId,
+    });
+    return OpenVerifiedCopyFolderResultSchema.parse(response);
+  },
+  async getToolDiagnostics(): Promise<ToolDiagnostics> {
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.toolDiagnostics, {});
+    return ToolDiagnosticsSchema.parse(response);
   },
 });
 
