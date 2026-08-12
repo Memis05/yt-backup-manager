@@ -26,14 +26,13 @@ import {
 
 export const YOUTUBE_READONLY_SCOPE = 'https://www.googleapis.com/auth/youtube.readonly';
 export const GOOGLE_DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+const GOOGLE_IDENTITY_SCOPES = Object.freeze(['openid', 'email', 'profile']);
 export const GOOGLE_OAUTH_SCOPES = Object.freeze([
-  'openid',
-  'email',
-  'profile',
+  ...GOOGLE_IDENTITY_SCOPES,
   YOUTUBE_READONLY_SCOPE,
 ]);
 export const GOOGLE_DRIVE_OAUTH_SCOPES = Object.freeze([
-  ...GOOGLE_OAUTH_SCOPES,
+  ...GOOGLE_IDENTITY_SCOPES,
   GOOGLE_DRIVE_FILE_SCOPE,
 ]);
 
@@ -714,7 +713,7 @@ export class GoogleAccountService {
               ? GOOGLE_DRIVE_OAUTH_SCOPES
               : GOOGLE_OAUTH_SCOPES),
           ];
-    if (!grantedScopes.includes(YOUTUBE_READONLY_SCOPE)) {
+    if (flow.capability === 'YOUTUBE' && !grantedScopes.includes(YOUTUBE_READONLY_SCOPE)) {
       throw new SourceProviderError(
         'OAUTH_CALLBACK_FAILED',
         'The required read-only YouTube permission was not granted.',

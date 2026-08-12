@@ -414,7 +414,7 @@ export function App() {
       });
       setNotice(
         capability === 'GOOGLE_DRIVE'
-          ? 'Google sign-in opened for combined YouTube read-only and Drive app-file access. Confirm the same Google identity, then return here.'
+          ? 'Google sign-in opened for Drive app-file access. Confirm the same Google identity, then return here.'
           : 'Google sign-in opened in your system browser. Finish there, then return here.',
       );
     } catch (caught) {
@@ -426,7 +426,7 @@ export function App() {
 
   const connectDrive = async (accountId: string): Promise<void> => {
     const confirmed = window.confirm(
-      'Enable Google Drive backup for this account? Google will show combined consent for YouTube read-only access and access only to Drive files created by this app. You must choose the same Google identity.',
+      'Enable Google Drive backup for this account? Google will request access only to Drive files created by this app. You must choose the same Google identity.',
     );
     if (!confirmed) return;
     await connectGoogle(accountId, 'GOOGLE_DRIVE');

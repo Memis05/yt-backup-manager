@@ -169,7 +169,7 @@ export class WorkerRuntime {
             this.options.onShutdownRequested === undefined ||
             this.sourceSync?.isIdle() === false ||
             this.googleAccounts?.isIdle() === false ||
-            this.localBackup?.isIdle() === false
+            this.localBackup?.requestShutdownIfIdle() !== true
           ) {
             return { accepted: false };
           }

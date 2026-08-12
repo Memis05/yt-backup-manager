@@ -190,4 +190,33 @@ describe('authenticated worker RPC transport', () => {
     client.close();
     await server.stop();
   });
+
+  it('supports a longer deadline for a durable request without weakening the default', async () => {
+    const pipe = endpoint();
+    const token = randomBytes(32).toString('hex');
+    const delayedHandlers: WorkerRpcHandlers = {
+      ...handlers,
+      'worker.health': async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return {
+          status: 'READY',
+          instanceId,
+          mode: 'DIRECT',
+          startedAt: '2026-08-11T00:00:00.000Z',
+          uptimeMs: 100,
+        };
+      },
+    };
+    const server = new WorkerRpcServer(pipe, token, delayedHandlers);
+    const client = new WorkerRpcClient(pipe, token, { requestTimeoutMs: 10 });
+    await server.start();
+
+    await expect(client.request('worker.health', {})).rejects.toMatchObject({ code: 'TIMEOUT' });
+    await expect(client.request('worker.health', {}, { timeoutMs: 250 })).resolves.toMatchObject({
+      instanceId,
+    });
+
+    client.close();
+    await server.stop();
+  });
 });

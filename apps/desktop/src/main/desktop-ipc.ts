@@ -20,6 +20,8 @@ import {
 
 import { googleDriveObjectUrl, isAllowedGoogleOAuthUrl } from './external-navigation';
 
+const BACKUP_START_RPC_TIMEOUT_MS = 5 * 60_000;
+
 export interface IpcHandlerRegistrar {
   handle(channel: string, handler: (event: unknown, input: unknown) => Promise<unknown>): void;
   removeHandler(channel: string): void;
@@ -78,7 +80,12 @@ export function registerDesktopIpcHandlers(
       throw new Error('Google OAuth authorization URL was rejected');
     }
     await openExternal(result.authorizationUrl);
-    return { status: 'STARTED', flowId: result.flowId, expiresAt: result.expiresAt };
+    return {
+      status: 'STARTED',
+      flowId: result.flowId,
+      capability: result.capability,
+      expiresAt: result.expiresAt,
+    };
   });
 
   handle(DESKTOP_IPC_CHANNELS.oauthStatus, async (input) =>
@@ -137,7 +144,9 @@ export function registerDesktopIpcHandlers(
     worker.request('backup.updateChannelSettings', input as ChannelBackupSettingsPatch),
   );
   handle(DESKTOP_IPC_CHANNELS.startBackup, async (input) =>
-    worker.request('backup.start', input as { channelId: string }),
+    worker.request('backup.start', input as { channelId: string }, {
+      timeoutMs: BACKUP_START_RPC_TIMEOUT_MS,
+    }),
   );
   handle(DESKTOP_IPC_CHANNELS.backupRuns, async () => worker.request('backup.runs', {}));
   handle(DESKTOP_IPC_CHANNELS.controlBackupRun, async (input) =>

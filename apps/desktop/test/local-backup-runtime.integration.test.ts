@@ -11,6 +11,7 @@ import {
 } from '@ytbm/database/worker';
 import type { YtDlpAdapter } from '@ytbm/download-ytdlp';
 import { MemoryLogSink, StructuredLogger } from '@ytbm/security';
+import type { StorageProvider } from '@ytbm/storage-core';
 import { FilesystemStorageProvider } from '@ytbm/storage-filesystem';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -134,6 +135,58 @@ function fakeThumbnailFetch(): typeof fetch {
 }
 
 describe('LocalBackupRuntime durable pipeline', () => {
+  it('does not accept an idle shutdown while destination reconciliation is active', async () => {
+    const fixture = await createFixture();
+    let markProbeStarted!: () => void;
+    const probeStarted = new Promise<void>((resolve) => {
+      markProbeStarted = resolve;
+    });
+    let releaseProbe!: () => void;
+    const probeReleased = new Promise<void>((resolve) => {
+      releaseProbe = resolve;
+    });
+    let delayProbe = false;
+    const storage: StorageProvider = {
+      type: 'FILESYSTEM',
+      probe: async (destination) => {
+        if (delayProbe) {
+          markProbeStarted();
+          await probeReleased;
+        }
+        return fixture.storage.probe(destination);
+      },
+      putFile: (input) => fixture.storage.putFile(input),
+      resolveCurrentRoot: (destination) => fixture.storage.resolveCurrentRoot(destination),
+    };
+    const runtime = new LocalBackupRuntime({
+      workerId: 'worker-reconciliation-shutdown-test',
+      database: fixture.database,
+      stagingRoot: fixture.stagingRoot,
+      ytDlpExecutable: 'fixture-yt-dlp.exe',
+      ffmpegExecutable: 'fixture-ffmpeg.exe',
+      logger: new StructuredLogger('local-backup-shutdown-test', new MemoryLogSink()),
+      settings: async () => DEFAULT_APP_SETTINGS,
+      fetch: fakeThumbnailFetch(),
+      storage,
+      ytDlp: {
+        version: async () => 'fixture',
+        probe: async (providerMediaId) => fakeProbe(providerMediaId, 'MAX_1080P'),
+        download: vi.fn<YtDlpAdapter['download']>(),
+      },
+      ffmpeg: fakeFfmpeg(),
+    });
+    runtimes.push(runtime);
+    await runtime.addDestination(fixture.backupRoot);
+    delayProbe = true;
+    runtime.start();
+
+    await probeStarted;
+    expect(runtime.requestShutdownIfIdle()).toBe(false);
+    releaseProbe();
+    await eventually(() => expect(runtime.isIdle()).toBe(true));
+    expect(runtime.requestShutdownIfIdle()).toBe(true);
+  });
+
   it('fails before acquisition when known media size exceeds staging capacity', async () => {
     const fixture = await createFixture();
     const download = vi.fn<YtDlpAdapter['download']>();

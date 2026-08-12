@@ -298,6 +298,7 @@ export class LocalBackupRuntime {
   private destinationProbeTimer: NodeJS.Timeout | null = null;
   private reconciliationCursor: string | null = null;
   private refreshPromise: Promise<void> | null = null;
+  private stopping = false;
 
   public constructor(private readonly options: LocalBackupRuntimeOptions) {
     this.now = options.now ?? Date.now;
@@ -331,6 +332,7 @@ export class LocalBackupRuntime {
   }
 
   public start(): void {
+    this.stopping = false;
     this.engine.start();
     this.scheduleDestinationRefresh();
     this.destinationProbeTimer = setInterval(() => {
@@ -340,6 +342,7 @@ export class LocalBackupRuntime {
   }
 
   public async stop(): Promise<void> {
+    this.stopping = true;
     if (this.destinationProbeTimer !== null) clearInterval(this.destinationProbeTimer);
     this.destinationProbeTimer = null;
     await this.engine.stop();
@@ -347,7 +350,15 @@ export class LocalBackupRuntime {
   }
 
   public isIdle(): boolean {
-    return this.engine.isIdle();
+    return !this.stopping && this.refreshPromise === null && this.engine.isIdle();
+  }
+
+  public requestShutdownIfIdle(): boolean {
+    if (!this.isIdle()) return false;
+    this.stopping = true;
+    if (this.destinationProbeTimer !== null) clearInterval(this.destinationProbeTimer);
+    this.destinationProbeTimer = null;
+    return true;
   }
 
   public async addDestination(rootPath: string): Promise<DestinationDto> {
@@ -2265,7 +2276,7 @@ export class LocalBackupRuntime {
   }
 
   private scheduleDestinationRefresh(): void {
-    if (this.refreshPromise !== null) return;
+    if (this.stopping || this.refreshPromise !== null) return;
     this.refreshPromise = this.refreshDestinationState().finally(() => {
       this.refreshPromise = null;
     });

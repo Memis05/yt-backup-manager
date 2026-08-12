@@ -54,10 +54,7 @@ describe('OAuth persistence boundary', () => {
       displayName: null,
       avatarUrl: null,
       credentialRef: 'google-oauth:drive',
-      grantedScopes: [
-        'https://www.googleapis.com/auth/youtube.readonly',
-        'https://www.googleapis.com/auth/drive.file',
-      ],
+      grantedScopes: ['https://www.googleapis.com/auth/drive.file'],
       capability: 'GOOGLE_DRIVE',
       connectedAt: 3,
     });

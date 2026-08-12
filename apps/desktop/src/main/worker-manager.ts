@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
+import { createConnection } from 'node:net';
 
 import { type App } from 'electron';
 
@@ -6,6 +7,33 @@ import { WorkerRpcClient, createUserScopedEndpoints } from '@ytbm/ipc';
 import { RpcAuthTokenStore, type StructuredLogger } from '@ytbm/security';
 
 import type { RuntimeConfig } from '../config/runtime';
+
+function endpointIsActive(endpoint: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = createConnection(endpoint);
+    let settled = false;
+    const finish = (active: boolean): void => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(active);
+    };
+    socket.once('connect', () => finish(true));
+    socket.once('error', () => finish(false));
+  });
+}
+
+export async function waitForWorkerEndpointRelease(
+  endpoint: string,
+  timeoutMs = 5 * 60_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!(await endpointIsActive(endpoint))) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error('The outdated backup worker did not release its process lock in time.');
+}
 
 export class DesktopWorkerManager {
   private client: WorkerRpcClient | null = null;
@@ -38,7 +66,7 @@ export class DesktopWorkerManager {
     if (connectedToExistingWorker && this.config.environment === 'development') {
       const shutdown = await client.request('worker.shutdownIfIdle', {});
       if (shutdown.accepted) {
-        await this.waitForWorkerShutdown(client);
+        await waitForWorkerEndpointRelease(endpoints.singleton);
         client.close();
         this.spawnWorker();
         await client.waitUntilConnected(10_000);
@@ -61,7 +89,7 @@ export class DesktopWorkerManager {
           { cause: error },
         );
       }
-      await this.waitForWorkerShutdown(client);
+      await waitForWorkerEndpointRelease(endpoints.singleton);
       client.close();
       this.spawnWorker();
       await client.waitUntilConnected(10_000);
@@ -87,19 +115,6 @@ export class DesktopWorkerManager {
       clientId: this.config.googleOAuthClientId,
       clientSecret: this.config.googleOAuthClientSecret,
     });
-  }
-
-  private async waitForWorkerShutdown(client: WorkerRpcClient): Promise<void> {
-    const deadline = Date.now() + 5_000;
-    while (Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      try {
-        await client.request('worker.health', {});
-      } catch {
-        return;
-      }
-    }
-    throw new Error('The outdated backup worker did not shut down in time.');
   }
 
   private spawnWorker(): void {

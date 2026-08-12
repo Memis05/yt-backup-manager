@@ -181,7 +181,7 @@ async function callback(result: { authorizationUrl: string }, state: string): Pr
 }
 
 describe('Google installed-application OAuth', () => {
-  it('uses explicit combined consent for Drive and preserves the YouTube credential', async () => {
+  it('uses a separate Drive-only grant and refreshes it without replacing YouTube', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'ytbm-oauth-drive-test-'));
     directories.push(directory);
     const store = new EncryptedFileCredentialStore(directory, encryption);
@@ -197,6 +197,7 @@ describe('Google installed-application OAuth', () => {
       connectedAt: 1,
     });
     await store.set('google-oauth:youtube-existing', 'existing-youtube-credential');
+    let tokenCalls = 0;
     const service = new GoogleAccountService(
       {
         clientId: 'desktop-client.apps.googleusercontent.com',
@@ -207,9 +208,11 @@ describe('Google installed-application OAuth', () => {
       async (input) => {
         const url = new URL(input.toString());
         if (url.pathname === '/token') {
+          tokenCalls += 1;
           return Response.json({
-            access_token: 'drive-access-secret',
-            refresh_token: 'drive-refresh-secret',
+            access_token:
+              tokenCalls === 1 ? 'drive-access-secret' : 'drive-refreshed-access-secret',
+            ...(tokenCalls === 1 ? { refresh_token: 'drive-refresh-secret' } : {}),
             expires_in: 3_600,
             token_type: 'Bearer',
             scope: GOOGLE_DRIVE_OAUTH_SCOPES.join(' '),
@@ -229,6 +232,8 @@ describe('Google installed-application OAuth', () => {
     const authorization = new URL(started.authorizationUrl);
     expect(authorization.searchParams.get('scope')?.split(' ')).toEqual(GOOGLE_DRIVE_OAUTH_SCOPES);
     expect(authorization.searchParams.get('scope')).toContain(GOOGLE_DRIVE_FILE_SCOPE);
+    expect(authorization.searchParams.get('scope')).not.toContain(YOUTUBE_READONLY_SCOPE);
+    expect(authorization.searchParams.has('include_granted_scopes')).toBe(false);
     await expect(
       callback(started, authorization.searchParams.get('state')!),
     ).resolves.toMatchObject({ status: 200 });
@@ -244,8 +249,18 @@ describe('Google installed-application OAuth', () => {
     await expect(store.get('google-oauth:youtube-existing')).resolves.toBe(
       'existing-youtube-credential',
     );
-    await expect(store.get(`google-oauth:${account.id}:drive`)).resolves.toContain(
-      'drive-refresh-secret',
+    await expect(service.getAccessToken(account.id, true, 'GOOGLE_DRIVE')).resolves.toBe(
+      'drive-refreshed-access-secret',
+    );
+    expect(tokenCalls).toBe(2);
+    const driveCredential = JSON.parse((await store.get(`google-oauth:${account.id}:drive`))!);
+    expect(driveCredential).toMatchObject({
+      accessToken: 'drive-refreshed-access-secret',
+      refreshToken: 'drive-refresh-secret',
+      grantedScopes: [...GOOGLE_DRIVE_OAUTH_SCOPES],
+    });
+    await expect(store.get('google-oauth:youtube-existing')).resolves.toBe(
+      'existing-youtube-credential',
     );
   });
 
@@ -444,6 +459,8 @@ describe('Google installed-application OAuth', () => {
     expect(authorization.searchParams.get('redirect_uri')).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(authorization.searchParams.get('scope')?.split(' ')).toEqual(GOOGLE_OAUTH_SCOPES);
     expect(authorization.searchParams.get('scope')).toContain(YOUTUBE_READONLY_SCOPE);
+    expect(authorization.searchParams.get('scope')).not.toContain(GOOGLE_DRIVE_FILE_SCOPE);
+    expect(authorization.searchParams.has('include_granted_scopes')).toBe(false);
     expect(authorization.searchParams.has('client_secret')).toBe(false);
 
     const state = authorization.searchParams.get('state')!;

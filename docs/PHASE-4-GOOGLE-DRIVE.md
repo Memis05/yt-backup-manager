@@ -241,9 +241,8 @@ When a user explicitly chooses to enable Google Drive backup for an account that
 
 1. explain that additional Google Drive access is required;
 2. start an explicit new Desktop OAuth authorization;
-3. request the required combined scopes for that capability:
+3. request only the scopes required for the separate Drive capability:
    - identity scopes;
-   - `youtube.readonly`;
    - `drive.file`;
 4. verify the returned Google identity matches the intended account;
 5. replace/update the encrypted credential set only after the new grant succeeds;
@@ -1519,17 +1518,16 @@ Implemented on the `feat/google-drive-backup` branch without changing the approv
 
 ### OAuth and account capability
 
-Drive enablement is an explicit account action. The desktop installed-app flow requests this exact combined scope set:
+Drive enablement is an explicit account action. YouTube and Drive use separate desktop installed-app flows and separate encrypted credentials. The Drive flow requests only this scope set:
 
 ```text
 openid
 email
 profile
-https://www.googleapis.com/auth/youtube.readonly
 https://www.googleapis.com/auth/drive.file
 ```
 
-The returned Google subject must match the selected existing account. The combined grant is stored in a separate encrypted Drive credential reference, so a cancelled, failed, mismatched, or later-revoked Drive grant does not replace the working YouTube credential. The renderer receives capability state and safe errors only; it never receives credentials.
+The YouTube flow separately requests identity scopes plus `https://www.googleapis.com/auth/youtube.readonly`. Neither flow sends `include_granted_scopes=true`. The returned Google subject must match the selected existing account. The Drive grant is stored in a separate encrypted Drive credential reference, so a cancelled, failed, mismatched, or later-revoked Drive grant does not replace the working YouTube credential. Each credential is refreshed independently. The renderer receives capability state and safe errors only; it never receives credentials.
 
 ### Drive archive layout
 
