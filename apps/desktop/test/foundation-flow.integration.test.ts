@@ -3,11 +3,17 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { DESKTOP_IPC_CHANNELS, WorkerRpcClient, createUserScopedEndpoints } from '@ytbm/ipc';
-import { MemoryLogSink, RpcAuthTokenStore, type EncryptionAdapter } from '@ytbm/security';
+import {
+  MemoryLogSink,
+  RpcAuthTokenStore,
+  StructuredLogger,
+  type EncryptionAdapter,
+} from '@ytbm/security';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { loadRuntimeConfig } from '../src/config/runtime';
 import { registerDesktopIpcHandlers, type IpcHandlerRegistrar } from '../src/main/desktop-ipc';
+import { DesktopWorkerManager } from '../src/main/worker-manager';
 import { WorkerRuntime } from '../src/worker-bootstrap/runtime';
 
 const directories: string[] = [];
@@ -44,6 +50,21 @@ describe('desktop-to-worker foundation flow', () => {
     runtimes.push(runtime);
     await expect(runtime.start()).resolves.toBe(true);
 
+    const workerManager = new DesktopWorkerManager(
+      {} as never,
+      {
+        ...config,
+        googleOAuthClientId: 'desktop-client.apps.googleusercontent.com',
+        googleOAuthClientSecret: 'desktop-client-secret',
+      },
+      new StructuredLogger('desktop-test', new MemoryLogSink()),
+    );
+    const configuredClient = await workerManager.connect();
+    await expect(
+      configuredClient.request('accounts.oauthBegin', { accountId: null }),
+    ).resolves.toMatchObject({ status: 'STARTED' });
+    workerManager.disconnect();
+
     const endpoints = createUserScopedEndpoints(config.paths.runtime);
     const token = await new RpcAuthTokenStore(config.paths.rpcToken).loadOrCreate();
     const client = new WorkerRpcClient(endpoints.rpc, token);
@@ -52,16 +73,26 @@ describe('desktop-to-worker foundation flow', () => {
       handle: (channel, handler) => handlers.set(channel, handler),
       removeHandler: (channel) => void handlers.delete(channel),
     };
-    const unregister = registerDesktopIpcHandlers(registrar, client);
+    let logFolderOpened = false;
+    const unregister = registerDesktopIpcHandlers(
+      registrar,
+      client,
+      async () => undefined,
+      async () => {
+        logFolderOpened = true;
+      },
+    );
     const foundationHandler = handlers.get(DESKTOP_IPC_CHANNELS.foundationStatus);
     const settingsHandler = handlers.get(DESKTOP_IPC_CHANNELS.updateSettings);
+    const openLogsHandler = handlers.get(DESKTOP_IPC_CHANNELS.openLogFolder);
     expect(foundationHandler).toBeDefined();
     expect(settingsHandler).toBeDefined();
+    expect(openLogsHandler).toBeDefined();
 
     await expect(foundationHandler!(null, {})).resolves.toMatchObject({
       worker: { status: 'READY' },
       database: {
-        schemaVersion: 3,
+        schemaVersion: 4,
         foreignKeysEnabled: true,
         journalMode: 'wal',
       },
@@ -72,6 +103,8 @@ describe('desktop-to-worker foundation flow', () => {
     await expect(foundationHandler!(null, {})).resolves.toMatchObject({
       settings: { startMinimized: true },
     });
+    await expect(openLogsHandler!(null, {})).resolves.toEqual({ opened: true });
+    expect(logFolderOpened).toBe(true);
 
     unregister();
     client.close();

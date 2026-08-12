@@ -1,10 +1,24 @@
 import {
+  AccountDtoSchema,
+  AccountsListResultSchema,
   AppSettingsSchema,
   ApplicationInfoSchema,
+  CatalogQuerySchema,
+  ChannelDtoSchema,
+  ChannelsListResultSchema,
   DatabaseHealthSchema,
   FoundationStatusSchema,
+  LibraryQueryResultSchema,
+  OAuthBeginResultSchema,
+  OAuthBeginWorkerResultSchema,
+  OAuthFlowDtoSchema,
+  PlaylistMembersQuerySchema,
+  PlaylistMembersResultSchema,
+  PlaylistQueryResultSchema,
+  PlaylistQuerySchema,
   RendererSettingsPatchSchema,
   SettingsPatchSchema,
+  SourceSyncJobDtoSchema,
   WorkerHealthSchema,
 } from '@ytbm/core';
 import { z } from 'zod';
@@ -40,10 +54,72 @@ export const WorkerRpcContracts = {
     params: SettingsPatchSchema,
     result: AppSettingsSchema,
   },
+  'accounts.oauthBegin': {
+    params: z.object({ accountId: z.string().uuid().nullable() }).strict(),
+    result: OAuthBeginWorkerResultSchema,
+  },
+  'accounts.oauthConfigure': {
+    params: z
+      .object({
+        clientId: z.string().min(1).max(300).nullable(),
+        clientSecret: z.string().min(1).max(300).nullable(),
+      })
+      .strict(),
+    result: z.object({ configured: z.boolean() }).strict(),
+  },
+  'accounts.oauthStatus': {
+    params: z.object({ flowId: z.string().uuid() }).strict(),
+    result: OAuthFlowDtoSchema,
+  },
+  'accounts.list': {
+    params: EmptyParamsSchema,
+    result: AccountsListResultSchema,
+  },
+  'accounts.disconnect': {
+    params: z.object({ accountId: z.string().uuid() }).strict(),
+    result: AccountDtoSchema,
+  },
+  'channels.discover': {
+    params: z.object({ accountId: z.string().uuid() }).strict(),
+    result: ChannelsListResultSchema,
+  },
+  'channels.list': {
+    params: z
+      .object({ accountId: z.string().uuid().nullable(), selectedOnly: z.boolean() })
+      .strict(),
+    result: ChannelsListResultSchema,
+  },
+  'channels.setEnabled': {
+    params: z.object({ channelId: z.string().uuid(), enabled: z.boolean() }).strict(),
+    result: ChannelDtoSchema,
+  },
+  'sync.start': {
+    params: z.object({ channelId: z.string().uuid() }).strict(),
+    result: SourceSyncJobDtoSchema,
+  },
+  'sync.status': {
+    params: z.object({ syncId: z.string().uuid() }).strict(),
+    result: SourceSyncJobDtoSchema,
+  },
+  'library.query': {
+    params: CatalogQuerySchema,
+    result: LibraryQueryResultSchema,
+  },
+  'playlists.query': {
+    params: PlaylistQuerySchema,
+    result: PlaylistQueryResultSchema,
+  },
+  'playlists.members': {
+    params: PlaylistMembersQuerySchema,
+    result: PlaylistMembersResultSchema,
+  },
 } as const;
 
 export type WorkerRpcMethod = keyof typeof WorkerRpcContracts;
 export type WorkerRpcParams<Method extends WorkerRpcMethod> = z.input<
+  (typeof WorkerRpcContracts)[Method]['params']
+>;
+export type WorkerRpcParsedParams<Method extends WorkerRpcMethod> = z.output<
   (typeof WorkerRpcContracts)[Method]['params']
 >;
 export type WorkerRpcResult<Method extends WorkerRpcMethod> = z.output<
@@ -84,7 +160,7 @@ export interface ParsedWorkerRpcRequest<Method extends WorkerRpcMethod = WorkerR
   id: string;
   authToken: string;
   method: Method;
-  params: WorkerRpcParams<Method>;
+  params: WorkerRpcParsedParams<Method>;
 }
 
 export function isWorkerRpcMethod(value: string): value is WorkerRpcMethod {
@@ -143,6 +219,19 @@ export type RpcResponseEnvelope = z.infer<typeof RpcResponseEnvelopeSchema>;
 export const DESKTOP_IPC_CHANNELS = {
   foundationStatus: 'ytbm:foundation-status',
   updateSettings: 'ytbm:settings-update',
+  openLogFolder: 'ytbm:logs-open',
+  beginGoogleOAuth: 'ytbm:accounts-oauth-begin',
+  oauthStatus: 'ytbm:accounts-oauth-status',
+  accountsList: 'ytbm:accounts-list',
+  disconnectAccount: 'ytbm:accounts-disconnect',
+  discoverChannels: 'ytbm:channels-discover',
+  channelsList: 'ytbm:channels-list',
+  setChannelEnabled: 'ytbm:channels-enabled',
+  startSync: 'ytbm:sync-start',
+  syncStatus: 'ytbm:sync-status',
+  libraryQuery: 'ytbm:library-query',
+  playlistsQuery: 'ytbm:playlists-query',
+  playlistMembers: 'ytbm:playlists-members',
 } as const;
 
 export type DesktopIpcChannel = (typeof DESKTOP_IPC_CHANNELS)[keyof typeof DESKTOP_IPC_CHANNELS];
@@ -155,6 +244,60 @@ const DesktopIpcContracts = {
   [DESKTOP_IPC_CHANNELS.updateSettings]: {
     input: RendererSettingsPatchSchema,
     output: AppSettingsSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.openLogFolder]: {
+    input: EmptyParamsSchema,
+    output: z.object({ opened: z.literal(true) }).strict(),
+  },
+  [DESKTOP_IPC_CHANNELS.beginGoogleOAuth]: {
+    input: z.object({ accountId: z.string().uuid().nullable() }).strict(),
+    output: OAuthBeginResultSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.oauthStatus]: {
+    input: z.object({ flowId: z.string().uuid() }).strict(),
+    output: OAuthFlowDtoSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.accountsList]: {
+    input: EmptyParamsSchema,
+    output: AccountsListResultSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.disconnectAccount]: {
+    input: z.object({ accountId: z.string().uuid() }).strict(),
+    output: AccountDtoSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.discoverChannels]: {
+    input: z.object({ accountId: z.string().uuid() }).strict(),
+    output: ChannelsListResultSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.channelsList]: {
+    input: z
+      .object({ accountId: z.string().uuid().nullable(), selectedOnly: z.boolean() })
+      .strict(),
+    output: ChannelsListResultSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.setChannelEnabled]: {
+    input: z.object({ channelId: z.string().uuid(), enabled: z.boolean() }).strict(),
+    output: ChannelDtoSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.startSync]: {
+    input: z.object({ channelId: z.string().uuid() }).strict(),
+    output: SourceSyncJobDtoSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.syncStatus]: {
+    input: z.object({ syncId: z.string().uuid() }).strict(),
+    output: SourceSyncJobDtoSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.libraryQuery]: {
+    input: CatalogQuerySchema,
+    output: LibraryQueryResultSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.playlistsQuery]: {
+    input: PlaylistQuerySchema,
+    output: PlaylistQueryResultSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.playlistMembers]: {
+    input: PlaylistMembersQuerySchema,
+    output: PlaylistMembersResultSchema,
   },
 } as const;
 

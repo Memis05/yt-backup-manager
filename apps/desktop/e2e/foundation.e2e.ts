@@ -19,7 +19,7 @@ async function stopWorker(userData: string, localData: string): Promise<void> {
   }
 }
 
-test('packaged desktop renders worker/database health and persists an allowed setting', async () => {
+test('packaged desktop renders the Phase 2 source catalog shell', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'ytbm-electron-e2e-'));
   const userData = join(directory, 'user-data');
   const localData = join(directory, 'local-data');
@@ -43,16 +43,11 @@ test('packaged desktop renders worker/database health and persists an allowed se
   let workerStopped = false;
   try {
     const page = await electronApp.firstWindow();
-    await expect(page.getByRole('heading', { name: 'Foundation diagnostics' })).toBeVisible();
-    await expect(page.getByText('Schema v3')).toBeVisible();
-    await expect(page.getByText('READY', { exact: true })).toBeVisible();
-
-    const startMinimized = page.getByRole('checkbox', { name: 'Start minimized' });
-    await expect(startMinimized).not.toBeChecked();
-    await startMinimized.click();
-    await expect(startMinimized).toBeChecked();
-    await page.reload();
-    await expect(page.getByRole('checkbox', { name: 'Start minimized' })).toBeChecked();
+    await expect(page.getByRole('heading', { name: 'Accounts' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Connect Google' })).toBeVisible();
+    await expect(page.getByText('Worker ready')).toBeVisible();
+    await page.getByRole('button', { name: 'Library' }).click();
+    await expect(page.getByRole('searchbox', { name: 'Search library' })).toBeVisible();
     await stopWorker(userData, localData);
     workerStopped = true;
   } finally {

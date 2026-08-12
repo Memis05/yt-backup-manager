@@ -1,11 +1,11 @@
 import { join } from 'node:path';
 
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, shell } from 'electron';
 
 import { WorkerRpcClient, createUserScopedEndpoints } from '@ytbm/ipc';
 import { JsonLinesFileSink, RpcAuthTokenStore, StructuredLogger } from '@ytbm/security';
 
-import { loadRuntimeConfig } from '../config/runtime';
+import { loadDevelopmentEnvironment, loadRuntimeConfig } from '../config/runtime';
 import { WorkerRuntime } from '../worker-bootstrap/runtime';
 import { registerDesktopIpcHandlers } from './desktop-ipc';
 import { secureWebContentsNavigation } from './external-navigation';
@@ -84,7 +84,17 @@ async function runDesktop(): Promise<void> {
   );
   const workerManager = new DesktopWorkerManager(app, config, logger);
   const worker = await workerManager.connect();
-  const unregisterIpc = registerDesktopIpcHandlers(ipcMain, worker);
+  const unregisterIpc = registerDesktopIpcHandlers(
+    ipcMain,
+    worker,
+    async (url) => {
+      await shell.openExternal(url);
+    },
+    async () => {
+      const failure = await shell.openPath(config.paths.logs);
+      if (failure !== '') throw new Error('The application log folder could not be opened.');
+    },
+  );
 
   const window = new BrowserWindow(
     createWindowOptions(join(import.meta.dirname, '../preload/index.cjs')),
@@ -109,6 +119,8 @@ async function runDesktop(): Promise<void> {
   });
   app.on('window-all-closed', () => app.quit());
 }
+
+loadDevelopmentEnvironment({ isPackaged: app.isPackaged, appPath: app.getAppPath() });
 
 const configuredUserData = process.env.YTBM_USER_DATA_PATH;
 if (configuredUserData !== undefined && configuredUserData.trim() !== '') {

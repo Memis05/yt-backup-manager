@@ -51,7 +51,7 @@ describe('worker-owned SQLite foundation', () => {
     expect(names).toContain('media_search');
     expect(new DatabaseHealthService(database).getHealth()).toMatchObject({
       status: 'READY',
-      schemaVersion: 3,
+      schemaVersion: 4,
       foreignKeysEnabled: true,
       journalMode: 'wal',
     });

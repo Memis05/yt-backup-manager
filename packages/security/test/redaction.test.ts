@@ -11,12 +11,18 @@ describe('central log redaction', () => {
       url: 'https://example.test/callback?code=abc123&state=ok',
       header: 'Bearer abc.def-123',
       errorCode: 'AUTH_REVOKED',
+      code: 'authorization-code-secret',
+      codeVerifier: 'pkce-verifier-secret',
+      id_token: 'identity-token-secret',
     });
 
     expect(JSON.stringify(output)).not.toContain('secret-access');
     expect(JSON.stringify(output)).not.toContain('secret-refresh');
     expect(JSON.stringify(output)).not.toContain('abc123');
     expect(JSON.stringify(output)).not.toContain('abc.def-123');
+    expect(JSON.stringify(output)).not.toContain('authorization-code-secret');
+    expect(JSON.stringify(output)).not.toContain('pkce-verifier-secret');
+    expect(JSON.stringify(output)).not.toContain('identity-token-secret');
     expect(output).toMatchObject({
       accessToken: '[REDACTED]',
       credential_ref: 'google-oauth:01',

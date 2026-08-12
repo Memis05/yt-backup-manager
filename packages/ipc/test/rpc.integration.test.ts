@@ -10,6 +10,9 @@ function endpoint(): string {
 }
 
 const instanceId = randomUUID();
+const accountId = randomUUID();
+const channelId = randomUUID();
+const syncId = randomUUID();
 const defaultSettings = {
   startWithWindows: false,
   startMinimized: false,
@@ -51,6 +54,81 @@ const handlers: WorkerRpcHandlers = {
   }),
   'settings.get': () => defaultSettings,
   'settings.update': (settings) => AppSettingsSchema.parse({ ...defaultSettings, ...settings }),
+  'accounts.oauthBegin': () => ({
+    status: 'UNAVAILABLE',
+    errorCode: 'OAUTH_CONFIGURATION_REQUIRED',
+    safeMessage: 'Google OAuth is not configured.',
+  }),
+  'accounts.oauthConfigure': ({ clientId, clientSecret }) => ({
+    configured: clientId !== null && clientSecret !== null,
+  }),
+  'accounts.oauthStatus': ({ flowId }) => ({
+    flowId,
+    status: 'EXPIRED',
+    expiresAt: 1,
+    account: null,
+    errorCode: 'OAUTH_FLOW_EXPIRED',
+    safeMessage: 'Authorization expired.',
+  }),
+  'accounts.list': () => ({ accounts: [] }),
+  'accounts.disconnect': () => ({
+    id: accountId,
+    provider: 'GOOGLE',
+    providerAccountId: 'google-subject',
+    email: 'owner@example.test',
+    displayName: 'Owner',
+    avatarUrl: null,
+    connectionState: 'DISCONNECTED',
+    capabilities: { youtubeReadonly: true, grantedScopes: [] },
+    connectedAt: 1,
+    lastAuthAt: 1,
+    lastErrorCode: null,
+  }),
+  'channels.discover': () => ({ channels: [] }),
+  'channels.list': () => ({ channels: [] }),
+  'channels.setEnabled': () => ({
+    id: channelId,
+    providerChannelId: 'UC-test',
+    title: 'Test channel',
+    handle: null,
+    thumbnailUrl: null,
+    backupEnabled: true,
+    sourceStatus: 'AVAILABLE',
+    publishedAt: null,
+    lastSyncAt: null,
+    accessibleAccountIds: [accountId],
+    videosCount: 0,
+    shortsCount: 0,
+    liveCount: 0,
+    syncStatus: null,
+  }),
+  'sync.start': () => ({
+    id: syncId,
+    channelId,
+    status: 'QUEUED',
+    phase: 'QUEUED',
+    progressRatio: null,
+    errorCode: null,
+    safeMessage: null,
+    nextRetryAt: null,
+    createdAt: 1,
+    updatedAt: 1,
+  }),
+  'sync.status': () => ({
+    id: syncId,
+    channelId,
+    status: 'COMPLETED',
+    phase: 'COMPLETE',
+    progressRatio: 1,
+    errorCode: null,
+    safeMessage: null,
+    nextRetryAt: null,
+    createdAt: 1,
+    updatedAt: 2,
+  }),
+  'library.query': ({ page, pageSize }) => ({ items: [], total: 0, page, pageSize }),
+  'playlists.query': ({ page, pageSize }) => ({ items: [], total: 0, page, pageSize }),
+  'playlists.members': ({ page, pageSize }) => ({ items: [], total: 0, page, pageSize }),
 };
 
 describe('authenticated worker RPC transport', () => {

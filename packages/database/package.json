@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@ytbm/core": "workspace:*",
+    "@ytbm/source-youtube": "workspace:*",
     "better-sqlite3": "catalog:",
     "drizzle-orm": "catalog:"
   },
