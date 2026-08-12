@@ -2,7 +2,11 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { acquireWorkerDatabaseOwnership, openWorkerDatabase } from '@ytbm/database/worker';
+import {
+  DrizzleGoogleAccountRepository,
+  acquireWorkerDatabaseOwnership,
+  openWorkerDatabase,
+} from '@ytbm/database/worker';
 import { DESKTOP_IPC_CHANNELS, WorkerRpcClient, createUserScopedEndpoints } from '@ytbm/ipc';
 import {
   MemoryLogSink,
@@ -56,6 +60,16 @@ describe('desktop-to-worker foundation flow', () => {
           ?, ?, ?, ?, ?)`,
       )
       .run(channelId, now, now, now, now, now);
+    const account = await new DrizzleGoogleAccountRepository(seedDatabase).upsertConnectedAccount({
+      providerAccountId: 'desktop-flow-subject',
+      email: 'desktop-flow@example.test',
+      displayName: 'Desktop Flow',
+      avatarUrl: null,
+      credentialRef: 'google-oauth:desktop-flow-youtube',
+      grantedScopes: ['https://www.googleapis.com/auth/youtube.readonly'],
+      capability: 'YOUTUBE',
+      connectedAt: now,
+    });
     seedDatabase.close();
     const runtime = new WorkerRuntime({
       config: { ...config, environment: 'test' },
@@ -80,7 +94,10 @@ describe('desktop-to-worker foundation flow', () => {
     );
     const configuredClient = await workerManager.connect();
     await expect(
-      configuredClient.request('accounts.oauthBegin', { accountId: null }),
+      configuredClient.request('accounts.oauthBegin', {
+        accountId: null,
+        capability: 'YOUTUBE',
+      }),
     ).resolves.toMatchObject({ status: 'STARTED' });
     workerManager.disconnect();
 
@@ -94,11 +111,14 @@ describe('desktop-to-worker foundation flow', () => {
     };
     let logFolderOpened = false;
     let destinationPickerOpened = false;
+    let openedExternalUrl: string | null = null;
     let ipcAuthorized = true;
     const unregister = registerDesktopIpcHandlers(
       registrar,
       client,
-      async () => undefined,
+      async (url) => {
+        openedExternalUrl = url;
+      },
       async () => {
         destinationPickerOpened = true;
         return join(directory, 'chosen-backup');
@@ -112,6 +132,7 @@ describe('desktop-to-worker foundation flow', () => {
     const foundationHandler = handlers.get(DESKTOP_IPC_CHANNELS.foundationStatus);
     const settingsHandler = handlers.get(DESKTOP_IPC_CHANNELS.updateSettings);
     const openLogsHandler = handlers.get(DESKTOP_IPC_CHANNELS.openLogFolder);
+    const oauthBeginHandler = handlers.get(DESKTOP_IPC_CHANNELS.beginGoogleOAuth);
     const chooseDestinationHandler = handlers.get(DESKTOP_IPC_CHANNELS.chooseFilesystemDestination);
     const updateBackupSettingsHandler = handlers.get(
       DESKTOP_IPC_CHANNELS.updateChannelBackupSettings,
@@ -121,6 +142,7 @@ describe('desktop-to-worker foundation flow', () => {
     expect(foundationHandler).toBeDefined();
     expect(settingsHandler).toBeDefined();
     expect(openLogsHandler).toBeDefined();
+    expect(oauthBeginHandler).toBeDefined();
     expect(chooseDestinationHandler).toBeDefined();
     expect(updateBackupSettingsHandler).toBeDefined();
     expect(startBackupHandler).toBeDefined();
@@ -129,7 +151,7 @@ describe('desktop-to-worker foundation flow', () => {
     await expect(foundationHandler!(null, {})).resolves.toMatchObject({
       worker: { status: 'READY' },
       database: {
-        schemaVersion: 5,
+        schemaVersion: 6,
         foreignKeysEnabled: true,
         journalMode: 'wal',
       },
@@ -142,6 +164,16 @@ describe('desktop-to-worker foundation flow', () => {
     });
     await expect(openLogsHandler!(null, {})).resolves.toEqual({ opened: true });
     expect(logFolderOpened).toBe(true);
+    await expect(
+      oauthBeginHandler!(null, {
+        accountId: account.id,
+        capability: 'GOOGLE_DRIVE',
+      }),
+    ).resolves.toMatchObject({
+      status: 'STARTED',
+      capability: 'GOOGLE_DRIVE',
+    });
+    expect(openedExternalUrl).toMatch(/^https:\/\/accounts\.google\.com\/o\/oauth2\/v2\/auth\?/);
     const chooseResult = (await chooseDestinationHandler!(null, {})) as {
       status: 'ADDED';
       destination: { id: string; availabilityStatus: string };

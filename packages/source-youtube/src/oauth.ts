@@ -6,6 +6,8 @@ import {
   OAuthFlowDtoSchema,
   type AccountConnectionState,
   type AccountDto,
+  type DriveCapabilityState,
+  type GoogleOAuthCapability,
   type OAuthBeginWorkerResult,
   type OAuthFlowDto,
   type SourceErrorCode,
@@ -23,11 +25,15 @@ import {
 } from './errors';
 
 export const YOUTUBE_READONLY_SCOPE = 'https://www.googleapis.com/auth/youtube.readonly';
+export const GOOGLE_DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+const GOOGLE_IDENTITY_SCOPES = Object.freeze(['openid', 'email', 'profile']);
 export const GOOGLE_OAUTH_SCOPES = Object.freeze([
-  'openid',
-  'email',
-  'profile',
+  ...GOOGLE_IDENTITY_SCOPES,
   YOUTUBE_READONLY_SCOPE,
+]);
+export const GOOGLE_DRIVE_OAUTH_SCOPES = Object.freeze([
+  ...GOOGLE_IDENTITY_SCOPES,
+  GOOGLE_DRIVE_FILE_SCOPE,
 ]);
 
 const StoredGoogleCredentialSchema = z
@@ -46,7 +52,9 @@ export interface GoogleAccountRecord {
   id: string;
   providerAccountId: string;
   credentialRef: string;
+  driveCredentialRef: string | null;
   connectionState: AccountConnectionState;
+  driveConnectionState: DriveCapabilityState;
 }
 
 export interface ConnectedGoogleAccountInput {
@@ -56,6 +64,7 @@ export interface ConnectedGoogleAccountInput {
   avatarUrl: string | null;
   credentialRef: string;
   grantedScopes: string[];
+  capability: GoogleOAuthCapability;
   connectedAt: number;
 }
 
@@ -67,6 +76,12 @@ export interface GoogleAccountPersistence {
   setAccountConnectionState(
     accountId: string,
     state: AccountConnectionState,
+    errorCode: SourceErrorCode | null,
+    changedAt: number,
+  ): Promise<AccountDto>;
+  setDriveCapabilityState(
+    accountId: string,
+    state: DriveCapabilityState,
     errorCode: SourceErrorCode | null,
     changedAt: number,
   ): Promise<AccountDto>;
@@ -113,6 +128,7 @@ interface FlowState {
   redirectUri: string;
   expiresAt: number;
   expectedAccountId: string | null;
+  capability: GoogleOAuthCapability;
   server: Server;
   timer: NodeJS.Timeout;
   status: OAuthFlowDto;
@@ -210,7 +226,10 @@ export class GoogleAccountService {
     return this.config.clientId !== null && this.config.clientSecret !== null;
   }
 
-  public async beginConnection(expectedAccountId: string | null): Promise<OAuthBeginWorkerResult> {
+  public async beginConnection(
+    expectedAccountId: string | null,
+    capability: GoogleOAuthCapability = 'YOUTUBE',
+  ): Promise<OAuthBeginWorkerResult> {
     const clientId = this.config.clientId?.trim();
     const clientSecret = this.config.clientSecret?.trim();
     if (
@@ -227,6 +246,13 @@ export class GoogleAccountService {
       };
     }
 
+    if (capability === 'GOOGLE_DRIVE' && expectedAccountId === null) {
+      throw new SourceProviderError(
+        'SOURCE_UNAVAILABLE',
+        'Connect the Google account for YouTube before enabling Google Drive.',
+        false,
+      );
+    }
     if (
       expectedAccountId !== null &&
       (await this.accounts.getAccountRecord(expectedAccountId)) === null
@@ -266,6 +292,7 @@ export class GoogleAccountService {
     const expiresAt = this.now() + this.flowTimeoutMs;
     const status = OAuthFlowDtoSchema.parse({
       flowId,
+      capability,
       status: 'PENDING',
       expiresAt,
       account: null,
@@ -281,6 +308,7 @@ export class GoogleAccountService {
       redirectUri,
       expiresAt,
       expectedAccountId,
+      capability,
       server,
       timer,
       status,
@@ -302,7 +330,9 @@ export class GoogleAccountService {
       client_id: clientId,
       redirect_uri: redirectUri,
       response_type: 'code',
-      scope: GOOGLE_OAUTH_SCOPES.join(' '),
+      scope: (capability === 'GOOGLE_DRIVE' ? GOOGLE_DRIVE_OAUTH_SCOPES : GOOGLE_OAUTH_SCOPES).join(
+        ' ',
+      ),
       code_challenge: codeChallenge,
       code_challenge_method: 'S256',
       state,
@@ -310,7 +340,13 @@ export class GoogleAccountService {
       prompt: 'consent',
     }).toString();
 
-    return { status: 'STARTED', flowId, authorizationUrl: authorizationUrl.toString(), expiresAt };
+    return {
+      status: 'STARTED',
+      flowId,
+      capability,
+      authorizationUrl: authorizationUrl.toString(),
+      expiresAt,
+    };
   }
 
   public getFlowStatus(flowId: string): OAuthFlowDto {
@@ -318,6 +354,7 @@ export class GoogleAccountService {
     if (flow === undefined) {
       return OAuthFlowDtoSchema.parse({
         flowId,
+        capability: 'YOUTUBE',
         status: 'EXPIRED',
         expiresAt: this.now(),
         account: null,
@@ -349,22 +386,47 @@ export class GoogleAccountService {
       }
     }
     await this.credentials.delete(account.credentialRef);
+    if (account.driveCredentialRef !== null) {
+      await this.credentials.delete(account.driveCredentialRef);
+    }
     return this.accounts.setAccountConnectionState(accountId, 'DISCONNECTED', null, this.now());
   }
 
-  public async getAccessToken(accountId: string, forceRefresh = false): Promise<string> {
+  public async getAccessToken(
+    accountId: string,
+    forceRefresh = false,
+    capability: GoogleOAuthCapability = 'YOUTUBE',
+  ): Promise<string> {
     const account = await this.accounts.getAccountRecord(accountId);
     if (account === null || account.connectionState === 'DISCONNECTED') {
       throw new SourceProviderError('AUTH_REVOKED', 'Google authorization is disconnected.', false);
     }
-    const plaintext = await this.credentials.get(account.credentialRef);
-    if (plaintext === null) {
-      await this.accounts.setAccountConnectionState(
-        accountId,
-        'REAUTH_REQUIRED',
+    const credentialRef =
+      capability === 'GOOGLE_DRIVE' ? account.driveCredentialRef : account.credentialRef;
+    if (credentialRef === null) {
+      throw new SourceProviderError(
         'AUTH_REVOKED',
-        this.now(),
+        'Google Drive authorization is required for this account.',
+        false,
       );
+    }
+    const plaintext = await this.credentials.get(credentialRef);
+    if (plaintext === null) {
+      if (capability === 'GOOGLE_DRIVE') {
+        await this.accounts.setDriveCapabilityState(
+          accountId,
+          'REAUTH_REQUIRED',
+          'AUTH_REVOKED',
+          this.now(),
+        );
+      } else {
+        await this.accounts.setAccountConnectionState(
+          accountId,
+          'REAUTH_REQUIRED',
+          'AUTH_REVOKED',
+          this.now(),
+        );
+      }
       throw new SourceProviderError(
         'AUTH_REVOKED',
         'Google authorization is missing. Reconnect this account.',
@@ -374,12 +436,21 @@ export class GoogleAccountService {
     const stored = StoredGoogleCredentialSchema.parse(JSON.parse(plaintext) as unknown);
     if (!forceRefresh && stored.expiresAt > this.now() + 60_000) return stored.accessToken;
     if (stored.refreshToken === null) {
-      await this.accounts.setAccountConnectionState(
-        accountId,
-        'REAUTH_REQUIRED',
-        'AUTH_REVOKED',
-        this.now(),
-      );
+      if (capability === 'GOOGLE_DRIVE') {
+        await this.accounts.setDriveCapabilityState(
+          accountId,
+          'REAUTH_REQUIRED',
+          'AUTH_REVOKED',
+          this.now(),
+        );
+      } else {
+        await this.accounts.setAccountConnectionState(
+          accountId,
+          'REAUTH_REQUIRED',
+          'AUTH_REVOKED',
+          this.now(),
+        );
+      }
       throw new SourceProviderError(
         'AUTH_REVOKED',
         'Google did not provide a reusable authorization. Reconnect this account.',
@@ -421,12 +492,21 @@ export class GoogleAccountService {
     if (!response.ok) {
       const revoked = response.status === 400 && body.error === 'invalid_grant';
       const code: SourceErrorCode = revoked ? 'AUTH_REVOKED' : 'AUTH_REFRESH_FAILED';
-      await this.accounts.setAccountConnectionState(
-        accountId,
-        revoked ? 'REAUTH_REQUIRED' : 'ERROR',
-        code,
-        this.now(),
-      );
+      if (capability === 'GOOGLE_DRIVE') {
+        await this.accounts.setDriveCapabilityState(
+          accountId,
+          revoked ? 'REAUTH_REQUIRED' : account.driveConnectionState,
+          code,
+          this.now(),
+        );
+      } else {
+        await this.accounts.setAccountConnectionState(
+          accountId,
+          revoked ? 'REAUTH_REQUIRED' : 'ERROR',
+          code,
+          this.now(),
+        );
+      }
       throw new SourceProviderError(
         code,
         revoked
@@ -452,13 +532,26 @@ export class GoogleAccountService {
           ? body.scope.split(/\s+/).filter(Boolean)
           : stored.grantedScopes,
     };
-    await this.credentials.set(account.credentialRef, JSON.stringify(refreshed));
-    await this.accounts.setAccountConnectionState(accountId, 'CONNECTED', null, this.now());
+    await this.credentials.set(credentialRef, JSON.stringify(refreshed));
+    if (capability === 'GOOGLE_DRIVE') {
+      await this.accounts.setDriveCapabilityState(accountId, 'CONNECTED', null, this.now());
+    } else {
+      await this.accounts.setAccountConnectionState(accountId, 'CONNECTED', null, this.now());
+    }
     return refreshed.accessToken;
   }
 
   public async markAuthorizationInvalid(accountId: string): Promise<void> {
     await this.accounts.setAccountConnectionState(
+      accountId,
+      'REAUTH_REQUIRED',
+      'AUTH_REVOKED',
+      this.now(),
+    );
+  }
+
+  public async markDriveAuthorizationInvalid(accountId: string): Promise<void> {
+    await this.accounts.setDriveCapabilityState(
       accountId,
       'REAUTH_REQUIRED',
       'AUTH_REVOKED',
@@ -530,7 +623,7 @@ export class GoogleAccountService {
       clearTimeout(flow.timer);
       flow.server.close();
       try {
-        await this.onAccountConnected?.(account);
+        if (flow.capability === 'YOUTUBE') await this.onAccountConnected?.(account);
       } catch {
         // Channel discovery can be retried independently after the account is safely connected.
       }
@@ -615,11 +708,22 @@ export class GoogleAccountService {
     const grantedScopes =
       typeof tokenBody.scope === 'string'
         ? tokenBody.scope.split(/\s+/).filter(Boolean)
-        : [...GOOGLE_OAUTH_SCOPES];
-    if (!grantedScopes.includes(YOUTUBE_READONLY_SCOPE)) {
+        : [
+            ...(flow.capability === 'GOOGLE_DRIVE'
+              ? GOOGLE_DRIVE_OAUTH_SCOPES
+              : GOOGLE_OAUTH_SCOPES),
+          ];
+    if (flow.capability === 'YOUTUBE' && !grantedScopes.includes(YOUTUBE_READONLY_SCOPE)) {
       throw new SourceProviderError(
         'OAUTH_CALLBACK_FAILED',
         'The required read-only YouTube permission was not granted.',
+        false,
+      );
+    }
+    if (flow.capability === 'GOOGLE_DRIVE' && !grantedScopes.includes(GOOGLE_DRIVE_FILE_SCOPE)) {
+      throw new SourceProviderError(
+        'OAUTH_CALLBACK_FAILED',
+        'The required Google Drive file permission was not granted.',
         false,
       );
     }
@@ -672,7 +776,10 @@ export class GoogleAccountService {
     }
     const existing = await this.accounts.findByProviderAccountId(providerAccountId);
     const accountId = existing?.id ?? flow.expectedAccountId ?? randomUUID();
-    const credentialRef = existing?.credentialRef ?? `google-oauth:${accountId}`;
+    const credentialRef =
+      flow.capability === 'GOOGLE_DRIVE'
+        ? (existing?.driveCredentialRef ?? `google-oauth:${accountId}:drive`)
+        : (existing?.credentialRef ?? `google-oauth:${accountId}`);
     flow.stage = 'CREDENTIAL_LOAD';
     const previousPlaintext = await this.credentials.get(credentialRef);
     const previous =
@@ -707,11 +814,13 @@ export class GoogleAccountService {
           avatarUrl: nullableString(identity.picture),
           credentialRef,
           grantedScopes,
+          capability: flow.capability,
           connectedAt: this.now(),
         }),
       );
     } catch {
-      if (existing === null) await this.credentials.delete(credentialRef);
+      if (previousPlaintext === null) await this.credentials.delete(credentialRef);
+      else await this.credentials.set(credentialRef, previousPlaintext);
       const persistenceError = new SourceProviderError(
         'OAUTH_CALLBACK_FAILED',
         'Google authorization succeeded, but the account could not be saved in the local catalog.',

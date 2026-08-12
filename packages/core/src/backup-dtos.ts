@@ -22,7 +22,7 @@ export const QUALITY_PROFILE_LABELS = {
   MAX_720P: 'Up to 720p',
 } as const satisfies Readonly<Record<z.infer<typeof QualityProfileSchema>, string>>;
 
-export const DestinationDtoSchema = z
+export const FilesystemDestinationDtoSchema = z
   .object({
     id: z.string().uuid(),
     destinationType: z.literal('FILESYSTEM'),
@@ -39,6 +39,29 @@ export const DestinationDtoSchema = z
     safeMessage: z.string().max(500).nullable(),
   })
   .strict();
+
+export const GoogleDriveDestinationDtoSchema = z
+  .object({
+    id: z.string().uuid(),
+    destinationType: z.literal('GOOGLE_DRIVE'),
+    accountId: z.string().uuid(),
+    accountEmail: z.string().email().nullable(),
+    accountDisplayName: z.string().nullable(),
+    providerRootId: z.string().min(1).max(500).nullable(),
+    rootName: z.string().min(1).max(200),
+    enabled: z.boolean(),
+    availabilityStatus: DestinationAvailabilitySchema,
+    availableBytes: z.number().int().nonnegative().nullable(),
+    totalBytes: z.number().int().nonnegative().nullable(),
+    lastProbeAt: NullableEpochMillisecondsSchema,
+    safeMessage: z.string().max(500).nullable(),
+  })
+  .strict();
+
+export const DestinationDtoSchema = z.discriminatedUnion('destinationType', [
+  FilesystemDestinationDtoSchema,
+  GoogleDriveDestinationDtoSchema,
+]);
 
 export const DestinationsListResultSchema = z
   .object({ destinations: z.array(DestinationDtoSchema) })
@@ -73,6 +96,7 @@ export const BackupRunDtoSchema = z
     discoveredCount: z.number().int().nonnegative(),
     downloadedCount: z.number().int().nonnegative(),
     localCopyCount: z.number().int().nonnegative(),
+    driveUploadCount: z.number().int().nonnegative(),
     metadataUpdateCount: z.number().int().nonnegative(),
     failedCount: z.number().int().nonnegative(),
     bytesDownloaded: z.number().int().nonnegative(),
@@ -102,6 +126,7 @@ export const QueueJobDtoSchema = z
     mediaTitle: z.string().nullable(),
     destinationId: z.string().uuid().nullable(),
     destinationPath: z.string().nullable(),
+    destinationType: z.enum(['FILESYSTEM', 'GOOGLE_DRIVE']).nullable(),
     jobType: JobTypeSchema,
     status: JobStatusSchema,
     priority: z.number().int(),
@@ -186,7 +211,10 @@ export const MediaCopyDtoSchema = z
     id: z.string().uuid(),
     destinationId: z.string().uuid(),
     destinationPath: z.string(),
+    destinationType: z.enum(['FILESYSTEM', 'GOOGLE_DRIVE']),
+    destinationAccountEmail: z.string().email().nullable(),
     relativePath: z.string().nullable(),
+    providerFileIdAvailable: z.boolean(),
     status: CopyStatusSchema,
     availabilityStatus: DestinationAvailabilitySchema,
     container: z.string().nullable(),
@@ -201,6 +229,9 @@ export const MediaCopyDtoSchema = z
       .regex(/^[a-f0-9]{64}$/)
       .nullable(),
     qualityProfile: QualityProfileSchema.nullable(),
+    verificationStrength: z
+      .enum(['LOCAL_SHA256', 'PROVIDER_METADATA_SIZE', 'DOWNLOADED_SHA256'])
+      .nullable(),
     verifiedAt: NullableEpochMillisecondsSchema,
   })
   .strict();
@@ -240,10 +271,55 @@ export const ToolDiagnosticsSchema = z
   .object({
     ytDlp: z.object({ available: z.boolean(), version: z.string().nullable() }).strict(),
     ffmpeg: z.object({ available: z.boolean(), version: z.string().nullable() }).strict(),
+    googleDrive: z
+      .object({
+        configuredDestinations: z.number().int().nonnegative(),
+        availableDestinations: z.number().int().nonnegative(),
+        activeUploads: z.number().int().nonnegative(),
+        lastSafeErrorCode: BackupErrorCodeSchema.nullable(),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const OpenGoogleDriveObjectResultSchema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('OPENED') }).strict(),
+  z
+    .object({
+      status: z.enum(['MISSING', 'UNAVAILABLE']),
+      safeMessage: z.string().min(1).max(500),
+    })
+    .strict(),
+]);
+
+export const ResolveGoogleDriveObjectResultSchema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('AVAILABLE'), providerId: z.string().min(1).max(500) }).strict(),
+  z
+    .object({
+      status: z.enum(['MISSING', 'UNAVAILABLE']),
+      safeMessage: z.string().min(1).max(500),
+    })
+    .strict(),
+]);
+
+export const DashboardSummarySchema = z
+  .object({
+    selectedChannelCount: z.number().int().nonnegative(),
+    mediaCount: z.number().int().nonnegative(),
+    intendedCopyCount: z.number().int().nonnegative(),
+    verifiedCopyCount: z.number().int().nonnegative(),
+    pendingCopyCount: z.number().int().nonnegative(),
+    failedCopyCount: z.number().int().nonnegative(),
+    verifiedBytes: z.number().int().nonnegative(),
+    localVerifiedCount: z.number().int().nonnegative(),
+    driveVerifiedCount: z.number().int().nonnegative(),
+    lastBackupAt: NullableEpochMillisecondsSchema,
   })
   .strict();
 
 export type DestinationDto = z.infer<typeof DestinationDtoSchema>;
+export type FilesystemDestinationDto = z.infer<typeof FilesystemDestinationDtoSchema>;
+export type GoogleDriveDestinationDto = z.infer<typeof GoogleDriveDestinationDtoSchema>;
 export type ChannelBackupSettingsDto = z.infer<typeof ChannelBackupSettingsDtoSchema>;
 export type ChannelBackupSettingsPatch = z.infer<typeof ChannelBackupSettingsPatchSchema>;
 export type BackupRunDto = z.infer<typeof BackupRunDtoSchema>;
@@ -260,3 +336,6 @@ export type MediaBackupDetails = z.infer<typeof MediaBackupDetailsSchema>;
 export type OpenVerifiedCopyFolderResult = z.infer<typeof OpenVerifiedCopyFolderResultSchema>;
 export type ResolveVerifiedCopyFolderResult = z.infer<typeof ResolveVerifiedCopyFolderResultSchema>;
 export type ToolDiagnostics = z.infer<typeof ToolDiagnosticsSchema>;
+export type OpenGoogleDriveObjectResult = z.infer<typeof OpenGoogleDriveObjectResultSchema>;
+export type ResolveGoogleDriveObjectResult = z.infer<typeof ResolveGoogleDriveObjectResultSchema>;
+export type DashboardSummary = z.infer<typeof DashboardSummarySchema>;

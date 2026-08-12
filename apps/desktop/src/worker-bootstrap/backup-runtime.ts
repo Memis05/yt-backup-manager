@@ -1,6 +1,7 @@
+import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { access, mkdir, open, rename, rm, stat, statfs, unlink } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, posix, relative, resolve } from 'node:path';
 
 import {
   BackupOperationError,
@@ -11,9 +12,11 @@ import {
   type BackupStartResult,
   type ChannelBackupSettingsDto,
   type DestinationDto,
+  type DashboardSummary,
   type JobType,
   type MediaBackupDetails,
   type ResolveVerifiedCopyFolderResult,
+  type ResolveGoogleDriveObjectResult,
   type QualityProfile,
   type QueueQuery,
   type QueueSnapshot,
@@ -37,11 +40,17 @@ import {
   ManifestVersionSchema,
   MediaMetadataSchema,
   PlaylistSidecarSchema,
+  serializeDeterministicJson,
   writeJsonAtomic,
 } from '@ytbm/manifest';
 import { FfmpegAdapter } from '@ytbm/media-ffmpeg';
 import type { LogContext, StructuredLogger } from '@ytbm/security';
-import type { DestinationProbe, StorageProvider } from '@ytbm/storage-core';
+import type {
+  DestinationProbe,
+  GoogleDriveObjectStat,
+  GoogleDriveStorageProvider,
+  StorageProvider,
+} from '@ytbm/storage-core';
 import {
   FilesystemStorageProvider,
   archiveFolderName,
@@ -50,6 +59,7 @@ import {
   mediaRelativeDirectory,
   resolvePathUnderRoot,
 } from '@ytbm/storage-filesystem';
+import { GOOGLE_DRIVE_ROOT_NAME, googleDriveMediaMimeType } from '@ytbm/storage-google-drive';
 import { z } from 'zod';
 
 import type { WorkerDatabase } from '@ytbm/database/worker';
@@ -116,6 +126,40 @@ const CopyResultSchema = z
   })
   .strict();
 
+const DriveUploadResultSchema = z
+  .object({
+    mediaCopyId: z.string().uuid(),
+    relativePath: z.string(),
+    providerFileId: z.string(),
+    container: z.string(),
+    videoCodec: z.string().nullable(),
+    audioCodec: z.string().nullable(),
+    width: z.number().nullable(),
+    height: z.number().nullable(),
+    fps: z.number().nullable(),
+    bytes: z.number().int().nonnegative(),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/),
+    qualityProfile: QualityProfileSchema,
+    contentGeneration: z.string(),
+    parentProviderId: z.string(),
+    reconciled: z.boolean(),
+  })
+  .strict();
+
+interface VerifiedTransferSource {
+  path: string;
+  container: string;
+  videoCodec: string | null;
+  audioCodec: string | null;
+  width: number | null;
+  height: number | null;
+  fps: number | null;
+  bytes: number;
+  sha256: string;
+  qualityProfile: QualityProfile;
+  reference: unknown;
+}
+
 export interface LocalBackupRuntimeOptions {
   workerId: string;
   database: WorkerDatabase;
@@ -129,6 +173,7 @@ export interface LocalBackupRuntimeOptions {
   ytDlp?: Pick<YtDlpAdapter, 'version' | 'probe' | 'download'>;
   ffmpeg?: Pick<FfmpegAdapter, 'version' | 'postProcess'>;
   storage?: StorageProvider;
+  googleDriveStorage?: GoogleDriveStorageProvider;
 }
 
 function errorCodeForProbe(probe: DestinationProbe): string | null {
@@ -136,6 +181,7 @@ function errorCodeForProbe(probe: DestinationProbe): string | null {
   if (probe.availability === 'DISCONNECTED') return 'DESTINATION_DISCONNECTED';
   if (probe.availability === 'READ_ONLY') return 'DESTINATION_READ_ONLY';
   if (probe.availability === 'FULL') return 'DESTINATION_FULL';
+  if (probe.availability === 'AUTH_REQUIRED') return 'AUTH_REVOKED';
   return 'COPY_FAILED';
 }
 
@@ -150,6 +196,13 @@ function nodeErrorCode(error: unknown): string | null {
     typeof error.code === 'string'
     ? error.code
     : null;
+}
+
+function hashBytes(value: Uint8Array): { bytes: number; sha256: string } {
+  return {
+    bytes: value.byteLength,
+    sha256: createHash('sha256').update(value).digest('hex'),
+  };
 }
 
 function thumbnailUrl(value: string): string {
@@ -236,6 +289,7 @@ export class LocalBackupRuntime {
   private readonly now: () => number;
   private readonly fetchImplementation: typeof fetch;
   private readonly storage: StorageProvider;
+  private readonly googleDriveStorage: GoogleDriveStorageProvider | null;
   private readonly repository: LocalBackupRepository;
   private readonly jobs: DurableJobSqlRepository;
   private readonly ytDlp: Pick<YtDlpAdapter, 'version' | 'probe' | 'download'>;
@@ -244,6 +298,7 @@ export class LocalBackupRuntime {
   private destinationProbeTimer: NodeJS.Timeout | null = null;
   private reconciliationCursor: string | null = null;
   private refreshPromise: Promise<void> | null = null;
+  private stopping = false;
 
   public constructor(private readonly options: LocalBackupRuntimeOptions) {
     this.now = options.now ?? Date.now;
@@ -251,6 +306,7 @@ export class LocalBackupRuntime {
     this.repository = new LocalBackupRepository(options.database, this.now);
     this.jobs = new DurableJobSqlRepository(options.database);
     this.storage = options.storage ?? new FilesystemStorageProvider();
+    this.googleDriveStorage = options.googleDriveStorage ?? null;
     this.ytDlp = options.ytDlp ?? new YtDlpAdapter(options.ytDlpExecutable);
     this.ffmpeg = options.ffmpeg ?? new FfmpegAdapter(options.ffmpegExecutable);
     const handlers = this.createHandlers();
@@ -264,6 +320,8 @@ export class LocalBackupRuntime {
         ffmpeg: 1,
         hash: 2,
         copy: 2,
+        driveTransfer: 2,
+        driveControl: 1,
         sidecar: 2,
         manifest: 1,
         cleanup: 1,
@@ -274,6 +332,7 @@ export class LocalBackupRuntime {
   }
 
   public start(): void {
+    this.stopping = false;
     this.engine.start();
     this.scheduleDestinationRefresh();
     this.destinationProbeTimer = setInterval(() => {
@@ -283,6 +342,7 @@ export class LocalBackupRuntime {
   }
 
   public async stop(): Promise<void> {
+    this.stopping = true;
     if (this.destinationProbeTimer !== null) clearInterval(this.destinationProbeTimer);
     this.destinationProbeTimer = null;
     await this.engine.stop();
@@ -290,7 +350,15 @@ export class LocalBackupRuntime {
   }
 
   public isIdle(): boolean {
-    return this.engine.isIdle();
+    return !this.stopping && this.refreshPromise === null && this.engine.isIdle();
+  }
+
+  public requestShutdownIfIdle(): boolean {
+    if (!this.isIdle()) return false;
+    this.stopping = true;
+    if (this.destinationProbeTimer !== null) clearInterval(this.destinationProbeTimer);
+    this.destinationProbeTimer = null;
+    return true;
   }
 
   public async addDestination(rootPath: string): Promise<DestinationDto> {
@@ -320,14 +388,36 @@ export class LocalBackupRuntime {
     return this.destinationDto(stored.id, probe);
   }
 
+  public async addGoogleDriveDestination(accountId: string): Promise<DestinationDto> {
+    const drive = this.requiredGoogleDriveStorage();
+    const destination = this.repository.addGoogleDriveDestination(accountId);
+    const probe = await drive.probe(destination);
+    this.repository.updateGoogleDriveDestinationProbe(
+      destination.id,
+      probe.availability,
+      errorCodeForProbe(probe),
+    );
+    if (probe.availability !== 'AVAILABLE') {
+      throw new Error(probe.safeMessage ?? 'Google Drive is not available for this account');
+    }
+    await this.ensureDriveRootForDestination(destination.id);
+    return this.googleDriveDestinationDto(destination.id, probe);
+  }
+
   public async listDestinations(): Promise<DestinationDto[]> {
-    const destinations = this.repository.listDestinations();
-    return Promise.all(
-      destinations.map(async (destination) => {
+    const filesystem = await Promise.all(
+      this.repository.listDestinations().map(async (destination) => {
         const probe = await this.probeDestination(destination.id);
         return this.destinationDto(destination.id, probe);
       }),
     );
+    const drive = await Promise.all(
+      this.repository.listGoogleDriveDestinations().map(async (destination) => {
+        const probe = await this.probeGoogleDriveDestination(destination.id);
+        return this.googleDriveDestinationDto(destination.id, probe);
+      }),
+    );
+    return [...filesystem, ...drive];
   }
 
   public disableDestination(destinationId: string): void {
@@ -379,10 +469,17 @@ export class LocalBackupRuntime {
     const current = this.jobs.getExecutionJob(jobId);
     if (
       action === 'CANCEL_REMOVE_PARTIAL' &&
-      current.jobType === 'DOWNLOAD_MEDIA' &&
+      (current.jobType === 'DOWNLOAD_MEDIA' || current.jobType === 'DOWNLOAD_FROM_GOOGLE_DRIVE') &&
       !['RUNNING', 'PAUSE_REQUESTED', 'CANCEL_REQUESTED'].includes(current.status)
     ) {
       await this.removeDownloadPayload(current.payload);
+    }
+    if (
+      action === 'CANCEL_REMOVE_PARTIAL' &&
+      current.jobType === 'UPLOAD_TO_GOOGLE_DRIVE' &&
+      !['RUNNING', 'PAUSE_REQUESTED', 'CANCEL_REQUESTED'].includes(current.status)
+    ) {
+      this.repository.deleteDriveUploadSession(current.id);
     }
     const job = this.jobs.controlJob(jobId, action, this.now());
     this.engine.wake();
@@ -408,6 +505,10 @@ export class LocalBackupRuntime {
     return this.repository.mediaBackupDetails(mediaItemId);
   }
 
+  public dashboardSummary(): DashboardSummary {
+    return this.repository.dashboardSummary();
+  }
+
   public async reconciledMediaDetails(mediaItemId: string): Promise<MediaBackupDetails> {
     await this.reconcileVerifiedCopyPresence({ mediaItemId, exhaust: true });
     return this.repository.mediaBackupDetails(mediaItemId);
@@ -424,14 +525,71 @@ export class LocalBackupRuntime {
         .then((version) => ({ available: true, version }))
         .catch(() => ({ available: false, version: null })),
     ]);
-    return ToolDiagnosticsSchema.parse({ ytDlp, ffmpeg });
+    const driveDestinations = this.repository.listGoogleDriveDestinations();
+    const activeUploads = (
+      this.options.database.sqlite
+        .prepare(
+          `select count(*) as count from jobs where job_type = 'UPLOAD_TO_GOOGLE_DRIVE'
+           and status in ('RUNNING','READY','PENDING','RETRY_WAIT')`,
+        )
+        .get() as { count: number }
+    ).count;
+    const lastDriveError = this.options.database.sqlite
+      .prepare(
+        `select last_error_code from destinations where destination_type = 'GOOGLE_DRIVE'
+         and last_error_code is not null order by last_error_at desc limit 1`,
+      )
+      .get() as { last_error_code: string } | undefined;
+    return ToolDiagnosticsSchema.parse({
+      ytDlp,
+      ffmpeg,
+      googleDrive: {
+        configuredDestinations: driveDestinations.length,
+        availableDestinations: driveDestinations.filter(
+          (destination) => destination.availabilityStatus === 'AVAILABLE',
+        ).length,
+        activeUploads,
+        lastSafeErrorCode: lastDriveError?.last_error_code ?? null,
+      },
+    });
+  }
+
+  public resolveGoogleDriveObject(
+    mediaCopyId: string | null,
+    destinationId: string | null,
+  ): ResolveGoogleDriveObjectResult {
+    if ((mediaCopyId === null) === (destinationId === null)) {
+      throw new Error('Select exactly one Google Drive object to open');
+    }
+    if (mediaCopyId !== null) {
+      const copy = this.repository.getMediaCopy(mediaCopyId);
+      if (copy.destinationType !== 'GOOGLE_DRIVE' || copy.providerFileId === null) {
+        return {
+          status: copy.status === 'MISSING' ? 'MISSING' : 'UNAVAILABLE',
+          safeMessage: 'This Google Drive media object is not available.',
+        };
+      }
+      return { status: 'AVAILABLE', providerId: copy.providerFileId };
+    }
+    const destination = this.repository.getGoogleDriveDestination(destinationId!);
+    if (destination.providerRootId === null) {
+      return {
+        status: 'UNAVAILABLE',
+        safeMessage: 'The Google Drive backup root is not configured.',
+      };
+    }
+    return { status: 'AVAILABLE', providerId: destination.providerRootId };
   }
 
   public async resolveVerifiedCopyFolder(
     mediaCopyId: string,
   ): Promise<ResolveVerifiedCopyFolderResult> {
     const copy = this.repository.getMediaCopy(mediaCopyId);
-    if (copy.status !== 'VERIFIED' || copy.relativePath === null) {
+    if (
+      copy.destinationType !== 'FILESYSTEM' ||
+      copy.status !== 'VERIFIED' ||
+      copy.relativePath === null
+    ) {
       return {
         status: copy.status === 'MISSING' ? 'MISSING' : 'UNAVAILABLE',
         safeMessage:
@@ -511,6 +669,50 @@ export class LocalBackupRuntime {
         this.jobHandler('sidecar', (context) => this.downloadThumbnail(context)),
       ],
       ['UPDATE_MANIFEST', this.jobHandler('manifest', (context) => this.updateManifest(context))],
+      [
+        'ENSURE_GOOGLE_DRIVE_ROOT',
+        this.jobHandler('driveControl', (context) => this.ensureGoogleDriveRoot(context)),
+      ],
+      [
+        'ENSURE_GOOGLE_DRIVE_FOLDER',
+        this.jobHandler('driveControl', (context) => this.ensureGoogleDriveFolders(context)),
+      ],
+      [
+        'UPLOAD_TO_GOOGLE_DRIVE',
+        this.jobHandler(
+          'driveTransfer',
+          (context) => this.uploadToGoogleDrive(context),
+          (context) => this.removeDriveUploadState(context),
+        ),
+      ],
+      [
+        'VERIFY_GOOGLE_DRIVE_COPY',
+        this.jobHandler('driveControl', (context) => this.verifyGoogleDriveCopy(context)),
+      ],
+      [
+        'DOWNLOAD_FROM_GOOGLE_DRIVE',
+        this.jobHandler(
+          'driveTransfer',
+          (context) => this.downloadFromGoogleDrive(context),
+          (context) => this.removeDownloadPartial(context),
+        ),
+      ],
+      [
+        'RECONCILE_GOOGLE_DRIVE_OBJECT',
+        this.jobHandler('driveControl', (context) => this.reconcileGoogleDriveObject(context)),
+      ],
+      [
+        'UPDATE_GOOGLE_DRIVE_METADATA',
+        this.jobHandler('sidecar', (context) => this.updateGoogleDriveMetadata(context)),
+      ],
+      [
+        'UPDATE_GOOGLE_DRIVE_THUMBNAIL',
+        this.jobHandler('sidecar', (context) => this.updateGoogleDriveThumbnail(context)),
+      ],
+      [
+        'UPDATE_GOOGLE_DRIVE_MANIFEST',
+        this.jobHandler('manifest', (context) => this.updateGoogleDriveManifest(context)),
+      ],
       ['CLEANUP_STAGING', this.jobHandler('cleanup', (context) => this.cleanupStaging(context))],
     ]);
   }
@@ -746,6 +948,7 @@ export class LocalBackupRuntime {
     if (payload.sourceCopyId !== null) {
       const sourceCopy = this.repository.getMediaCopy(payload.sourceCopyId);
       if (
+        sourceCopy.destinationType !== 'FILESYSTEM' ||
         sourceCopy.status !== 'VERIFIED' ||
         sourceCopy.relativePath === null ||
         sourceCopy.sha256 === null ||
@@ -798,9 +1001,10 @@ export class LocalBackupRuntime {
         qualityProfile: sourceCopy.qualityProfile ?? payload.qualityProfile,
       };
     } else {
-      const staging = StagingResultSchema.parse(
-        this.repository.getDependencyResult(context.job.id, 'VERIFY_STAGING_MEDIA'),
-      );
+      const stagingDependency =
+        this.repository.getDependencyResult(context.job.id, 'VERIFY_STAGING_MEDIA') ??
+        this.repository.getDependencyResult(context.job.id, 'DOWNLOAD_FROM_GOOGLE_DRIVE');
+      const staging = StagingResultSchema.parse(stagingDependency);
       await this.assertStagingPath(staging.path, false);
       source = {
         path: staging.path,
@@ -1114,6 +1318,556 @@ export class LocalBackupRuntime {
     return { mediaCount: manifest.media.length, playlistCount: manifest.playlists.length };
   }
 
+  private async ensureGoogleDriveRoot(context: JobExecutionContext): Promise<unknown> {
+    const destinationId = this.requiredDestinationId(context);
+    const root = await this.ensureDriveRootForDestination(destinationId);
+    return { providerRootId: root.providerFileId };
+  }
+
+  private async ensureGoogleDriveFolders(context: JobExecutionContext): Promise<unknown> {
+    const destinationId = this.requiredDestinationId(context);
+    const channelId = this.requiredChannelId(context);
+    const media = this.options.database.sqlite
+      .prepare(`select provider_channel_id, title from channels where id = ?`)
+      .get(channelId) as { provider_channel_id: string; title: string } | undefined;
+    if (media === undefined) throw new Error('Channel was not found');
+    const folders = await this.ensureDriveChannelFolders(
+      destinationId,
+      media.provider_channel_id,
+      media.title,
+    );
+    return {
+      channelFolderId: folders.channel.providerFileId,
+      categoryFolderIds: Object.fromEntries(
+        Object.entries(folders.categories).map(([key, value]) => [key, value.providerFileId]),
+      ),
+    };
+  }
+
+  private async uploadToGoogleDrive(context: JobExecutionContext): Promise<unknown> {
+    const drive = this.requiredGoogleDriveStorage();
+    const media = this.requiredMedia(context);
+    const payload = CopyJobPayloadSchema.parse(context.job.payload);
+    const copy = this.repository.getMediaCopy(payload.mediaCopyId);
+    if (copy.destinationType !== 'GOOGLE_DRIVE') {
+      throw new BackupOperationError(
+        'INTERNAL_ERROR',
+        'A Google Drive upload targeted the wrong destination type.',
+        { disposition: 'FAIL' },
+      );
+    }
+    const destination = this.repository.getGoogleDriveDestination(copy.destinationId);
+    const source = await this.resolveVerifiedTransferSource(context, payload);
+    const folders = await this.ensureDriveChannelFolders(
+      copy.destinationId,
+      media.providerChannelId,
+      media.channelTitle,
+    );
+    const category = this.driveCategory(media.mediaType);
+    const mediaFolder = await this.ensureDriveFolder(
+      destination,
+      `media:${media.providerMediaId}`,
+      folders.categories[category].providerFileId,
+      archiveFolderName(media.title, media.providerMediaId),
+      'MEDIA_FOLDER',
+      {
+        ytbmObjectKey: `media:${media.providerMediaId}`,
+        ytbmSchemaVersion: '1',
+        sourceProvider: 'youtube',
+        providerMediaId: media.providerMediaId,
+        channelId: media.providerChannelId,
+      },
+    );
+    const name = `video.${source.container}`;
+    const relativePath = posix.join(
+      archiveFolderName(media.channelTitle, media.providerChannelId),
+      category,
+      archiveFolderName(media.title, media.providerMediaId),
+      name,
+    );
+    const objectKey = `media:${media.providerMediaId}:video`;
+    this.repository.markMediaCopyTransferring(copy.id);
+    const persisted = this.repository.getDriveUploadSession(context.job.id);
+    const uploaded = await drive.putFile({
+      destination,
+      sourcePath: source.path,
+      parentProviderId: mediaFolder.providerFileId,
+      name,
+      mimeType: googleDriveMediaMimeType(source.container),
+      expectedSha256: source.sha256,
+      expectedBytes: source.bytes,
+      appProperties: {
+        ytbmObjectKey: objectKey,
+        ytbmSchemaVersion: '1',
+        sourceProvider: 'youtube',
+        providerMediaId: media.providerMediaId,
+        channelId: media.providerChannelId,
+        artifactType: 'video',
+        sha256: source.sha256,
+      },
+      knownProviderFileId: copy.providerFileId,
+      resumableState: persisted,
+      signal: context.signal,
+      onProgress: (bytesProcessed) =>
+        context.progress({
+          bytesProcessed,
+          bytesTotal: source.bytes,
+          progressRatio: relativeProgress(bytesProcessed, source.bytes),
+          speedBytesPerSec: null,
+          etaSeconds: null,
+        }),
+      onCheckpoint: (checkpoint) => {
+        this.repository.saveDriveUploadSession({
+          jobId: context.job.id,
+          destinationId: destination.id,
+          mediaCopyId: copy.id,
+          parentProviderObjectId: mediaFolder.providerFileId,
+          sessionUri: checkpoint.sessionUri,
+          providerFileId: checkpoint.providerFileId,
+          bytesAcknowledged: checkpoint.bytesAcknowledged,
+          expectedBytes: source.bytes,
+          expectedSha256: source.sha256,
+          sourceReference: source.reference,
+        });
+      },
+    });
+    const result = DriveUploadResultSchema.parse({
+      mediaCopyId: copy.id,
+      relativePath,
+      providerFileId: uploaded.providerFileId,
+      container: source.container,
+      videoCodec: source.videoCodec,
+      audioCodec: source.audioCodec,
+      width: source.width,
+      height: source.height,
+      fps: source.fps,
+      bytes: uploaded.bytes,
+      sha256: source.sha256,
+      qualityProfile: source.qualityProfile,
+      contentGeneration: payload.contentGeneration,
+      parentProviderId: mediaFolder.providerFileId,
+      reconciled: uploaded.reconciled,
+    });
+    this.repository.updateDriveMediaCopyTransferred(copy.id, {
+      ...result,
+      providerMetadata: {
+        parents: uploaded.parents,
+        appProperties: uploaded.appProperties,
+        verificationStrength: 'PROVIDER_METADATA_SIZE',
+      },
+    });
+    this.repository.upsertProviderObject({
+      destinationId: destination.id,
+      logicalKey: objectKey,
+      objectType: 'VIDEO',
+      providerObjectId: uploaded.providerFileId,
+      parentProviderObjectId: uploaded.parents[0] ?? null,
+      currentName: uploaded.name,
+    });
+    this.repository.deleteDriveUploadSession(context.job.id);
+    return result;
+  }
+
+  private async verifyGoogleDriveCopy(context: JobExecutionContext): Promise<unknown> {
+    const drive = this.requiredGoogleDriveStorage();
+    const result = DriveUploadResultSchema.parse(
+      this.repository.getDependencyResult(context.job.id, 'UPLOAD_TO_GOOGLE_DRIVE'),
+    );
+    const copy = this.repository.getMediaCopy(result.mediaCopyId);
+    const destination = this.repository.getGoogleDriveDestination(copy.destinationId);
+    const current = await drive.stat({
+      destination,
+      providerFileId: result.providerFileId,
+    });
+    if (current === null) {
+      this.repository.markMediaCopyFailure(copy.id, 'MISSING', 'PROVIDER_OBJECT_MISSING');
+      throw new BackupOperationError(
+        'PROVIDER_OBJECT_MISSING',
+        'The uploaded Google Drive object could not be found.',
+        { disposition: 'RETRY' },
+      );
+    }
+    if (
+      current.bytes !== result.bytes ||
+      current.appProperties.sha256 !== result.sha256 ||
+      current.appProperties.providerMediaId !== this.requiredMedia(context).providerMediaId
+    ) {
+      this.repository.markMediaCopyFailure(copy.id, 'CORRUPT', 'VERIFY_FAILED');
+      throw new BackupOperationError(
+        'VERIFY_FAILED',
+        'Google Drive metadata did not match the verified upload source.',
+        { disposition: 'RETRY' },
+      );
+    }
+    if (!this.repository.markMediaCopyVerified(copy.id, 'PROVIDER_METADATA_SIZE')) {
+      throw new BackupOperationError(
+        'VERIFY_FAILED',
+        'The Google Drive copy state changed before verification could be committed.',
+        { disposition: 'RETRY' },
+      );
+    }
+    this.repository.recordActivity({
+      eventType: 'GOOGLE_DRIVE_COPY_VERIFIED',
+      mediaItemId: copy.mediaItemId,
+      destinationId: copy.destinationId,
+      jobId: context.job.id,
+      summary:
+        'A Google Drive media copy was verified by provider identity, size, and app metadata.',
+      details: { verificationStrength: 'PROVIDER_METADATA_SIZE' },
+    });
+    return { ...result, providerName: current.name, parents: current.parents };
+  }
+
+  private async downloadFromGoogleDrive(context: JobExecutionContext): Promise<unknown> {
+    const drive = this.requiredGoogleDriveStorage();
+    const media = this.requiredMedia(context);
+    const payload = z
+      .object({
+        sourceCopyId: z.string().uuid(),
+        generation: z.string(),
+        stagingDirectory: z.string(),
+      })
+      .strict()
+      .parse(context.job.payload);
+    const source = this.repository.getMediaCopy(payload.sourceCopyId);
+    if (
+      source.destinationType !== 'GOOGLE_DRIVE' ||
+      source.status !== 'VERIFIED' ||
+      source.providerFileId === null ||
+      source.sha256 === null ||
+      source.bytes === null ||
+      source.container === null
+    ) {
+      throw new BackupOperationError(
+        'COPY_MISSING',
+        'The Google Drive source copy is not trusted or is missing.',
+        { disposition: 'FAIL' },
+      );
+    }
+    const stagingDirectory = await this.prepareStagingDirectory(payload.stagingDirectory);
+    const destinationPath = join(stagingDirectory, `drive-source.${source.container}`);
+    const destination = this.repository.getGoogleDriveDestination(source.destinationId);
+    try {
+      const downloaded = await drive.getFile({
+        destination,
+        providerFileId: source.providerFileId,
+        destinationPath,
+        expectedSha256: source.sha256,
+        expectedBytes: source.bytes,
+        signal: context.signal,
+        onProgress: (bytesProcessed) =>
+          context.progress({
+            bytesProcessed,
+            bytesTotal: source.bytes,
+            progressRatio: relativeProgress(bytesProcessed, source.bytes),
+            speedBytesPerSec: null,
+            etaSeconds: null,
+          }),
+      });
+      await this.assertStagingPath(downloaded.path, false);
+      this.repository.setStagingArtifact({
+        mediaItemId: media.id,
+        jobId: context.job.id,
+        artifactType: 'MEDIA',
+        path: downloaded.path,
+        bytes: downloaded.bytes,
+        sha256: downloaded.sha256,
+        state: 'VERIFIED',
+        generation: payload.generation,
+      });
+      this.repository.recordDownloadedDriveVerification(source.id);
+      return StagingResultSchema.parse({
+        providerMediaId: media.providerMediaId,
+        qualityProfile: source.qualityProfile ?? 'MAX_1080P',
+        videoFormatId: 'google-drive',
+        audioFormatId: null,
+        container: source.container,
+        videoCodec: source.videoCodec,
+        audioCodec: source.audioCodec,
+        width: source.width,
+        height: source.height,
+        fps: source.fps,
+        expectedBytes: source.bytes,
+        path: downloaded.path,
+        sha256: downloaded.sha256,
+        bytes: downloaded.bytes,
+        downloadedAt: this.now(),
+        generation: payload.generation,
+      });
+    } catch (error) {
+      if (error instanceof BackupOperationError && error.code === 'COPY_CORRUPT') {
+        this.repository.markMediaCopyFailure(source.id, 'CORRUPT', 'COPY_CORRUPT');
+      }
+      throw error;
+    }
+  }
+
+  private async reconcileGoogleDriveObject(context: JobExecutionContext): Promise<unknown> {
+    const payload = z
+      .object({ mediaCopyId: z.string().uuid() })
+      .passthrough()
+      .parse(context.job.payload);
+    const copy = this.repository.getMediaCopy(payload.mediaCopyId);
+    await this.reconcileVerifiedCopy(copy);
+    return { status: this.repository.getMediaCopy(copy.id).status };
+  }
+
+  private async updateGoogleDriveMetadata(context: JobExecutionContext): Promise<unknown> {
+    const drive = this.requiredGoogleDriveStorage();
+    const media = this.requiredMedia(context);
+    const payload = z
+      .object({ mediaCopyId: z.string().uuid(), contentGeneration: z.string() })
+      .passthrough()
+      .parse(context.job.payload);
+    const copy = this.repository.getMediaCopy(payload.mediaCopyId);
+    this.assertVerifiedCopy(copy);
+    if (copy.destinationType !== 'GOOGLE_DRIVE') {
+      throw new BackupOperationError('INTERNAL_ERROR', 'Drive metadata targeted a local copy.', {
+        disposition: 'FAIL',
+      });
+    }
+    const destination = this.repository.getGoogleDriveDestination(copy.destinationId);
+    const mediaFolder = await this.ensureDriveMediaFolder(destination, media);
+    const verifiedAt = copy.verifiedAt ?? this.now();
+    const metadata = MediaMetadataSchema.parse({
+      schemaVersion: 1,
+      provider: 'YOUTUBE',
+      providerMediaId: media.providerMediaId,
+      channelId: media.providerChannelId,
+      channelTitle: media.channelTitle,
+      currentTitle: media.title,
+      originalTitle: media.originalTitle,
+      sourceUrl: media.sourceUrl,
+      mediaType: media.mediaType,
+      sourceStatus: media.sourceStatus,
+      ...(media.publishedAt === null ? {} : { publishedAt: media.publishedAt }),
+      ...(media.durationSeconds === null ? {} : { duration: media.durationSeconds }),
+      selectedQualityProfile: copy.qualityProfile,
+      container: copy.container,
+      ...(copy.videoCodec === null ? {} : { videoCodec: copy.videoCodec }),
+      ...(copy.audioCodec === null ? {} : { audioCodec: copy.audioCodec }),
+      ...(copy.width === null ? {} : { width: copy.width }),
+      ...(copy.height === null ? {} : { height: copy.height }),
+      ...(copy.fps === null ? {} : { fps: copy.fps }),
+      bytes: copy.bytes,
+      sha256: copy.sha256,
+      downloadedAt: verifiedAt,
+      verifiedAt,
+      ...(media.lastSourceSyncAt === null ? {} : { lastSourceSyncAt: media.lastSourceSyncAt }),
+      playlistIds: media.playlistIds,
+    });
+    const content = new TextEncoder().encode(serializeDeterministicJson(metadata));
+    const hash = hashBytes(content);
+    const knownProviderFileId = this.repository.getMediaArtifactProviderId(
+      media.id,
+      destination.id,
+      'METADATA',
+    );
+    const uploaded = await drive.putContent({
+      destination,
+      parentProviderId: mediaFolder.providerFileId,
+      name: 'metadata.json',
+      mimeType: 'application/json',
+      content,
+      appProperties: {
+        ytbmObjectKey: `media:${media.providerMediaId}:metadata`,
+        ytbmSchemaVersion: '1',
+        sourceProvider: 'youtube',
+        providerMediaId: media.providerMediaId,
+        artifactType: 'metadata',
+        sha256: hash.sha256,
+      },
+      knownProviderFileId,
+      signal: context.signal,
+    });
+    const relativePath = posix.join(
+      archiveFolderName(media.channelTitle, media.providerChannelId),
+      this.driveCategory(media.mediaType),
+      archiveFolderName(media.title, media.providerMediaId),
+      'metadata.json',
+    );
+    this.repository.upsertMediaArtifact({
+      mediaItemId: media.id,
+      destinationId: destination.id,
+      artifactType: 'METADATA',
+      relativePath,
+      providerFileId: uploaded.providerFileId,
+      ...hash,
+      contentGeneration: payload.contentGeneration,
+    });
+    return { relativePath, providerFileId: uploaded.providerFileId, ...hash };
+  }
+
+  private async updateGoogleDriveThumbnail(context: JobExecutionContext): Promise<unknown> {
+    const drive = this.requiredGoogleDriveStorage();
+    const media = this.requiredMedia(context);
+    if (media.thumbnailUrl === null) return { skipped: true };
+    const payload = z
+      .object({ contentGeneration: z.string() })
+      .passthrough()
+      .parse(context.job.payload);
+    const destinationId = this.requiredDestinationId(context);
+    const copy = this.findVerifiedCopy(media.id, destinationId);
+    if (copy.destinationType !== 'GOOGLE_DRIVE') {
+      throw new BackupOperationError('INTERNAL_ERROR', 'Drive thumbnail targeted a local copy.', {
+        disposition: 'FAIL',
+      });
+    }
+    const destination = this.repository.getGoogleDriveDestination(destinationId);
+    const mediaFolder = await this.ensureDriveMediaFolder(destination, media);
+    const response = await this.fetchImplementation(thumbnailUrl(media.thumbnailUrl), {
+      signal: context.signal,
+      redirect: 'error',
+    });
+    if (!response.ok) {
+      throw new BackupOperationError(
+        'NETWORK_UNAVAILABLE',
+        'The current YouTube thumbnail could not be downloaded.',
+        { disposition: response.status >= 500 ? 'RETRY' : 'FAIL' },
+      );
+    }
+    const content = await readBoundedBody(response, 20 * 1024 * 1024);
+    const hash = hashBytes(content);
+    const knownProviderFileId = this.repository.getMediaArtifactProviderId(
+      media.id,
+      destination.id,
+      'THUMBNAIL',
+    );
+    const uploaded = await drive.putContent({
+      destination,
+      parentProviderId: mediaFolder.providerFileId,
+      name: 'thumbnail.jpg',
+      mimeType: 'image/jpeg',
+      content,
+      appProperties: {
+        ytbmObjectKey: `media:${media.providerMediaId}:thumbnail`,
+        ytbmSchemaVersion: '1',
+        sourceProvider: 'youtube',
+        providerMediaId: media.providerMediaId,
+        artifactType: 'thumbnail',
+        sha256: hash.sha256,
+      },
+      knownProviderFileId,
+      signal: context.signal,
+    });
+    const relativePath = posix.join(
+      archiveFolderName(media.channelTitle, media.providerChannelId),
+      this.driveCategory(media.mediaType),
+      archiveFolderName(media.title, media.providerMediaId),
+      'thumbnail.jpg',
+    );
+    this.repository.upsertMediaArtifact({
+      mediaItemId: media.id,
+      destinationId,
+      artifactType: 'THUMBNAIL',
+      relativePath,
+      providerFileId: uploaded.providerFileId,
+      ...hash,
+      contentGeneration: payload.contentGeneration,
+    });
+    return { relativePath, providerFileId: uploaded.providerFileId, ...hash };
+  }
+
+  private async updateGoogleDriveManifest(context: JobExecutionContext): Promise<unknown> {
+    const channelId = this.requiredChannelId(context);
+    const destinationId = this.requiredDestinationId(context);
+    const destination = this.repository.getGoogleDriveDestination(destinationId);
+    const data = this.repository.getChannelManifestData(channelId, destinationId);
+    const folders = await this.ensureDriveChannelFolders(
+      destinationId,
+      data.providerChannelId,
+      data.channelTitle,
+    );
+    const playlistEntries: Array<{
+      providerPlaylistId: string;
+      playlistFile: string;
+      mediaIds: string[];
+    }> = [];
+    for (const playlist of data.playlists) {
+      const playlistFolder = await this.ensureDriveFolder(
+        destination,
+        `playlist:${playlist.providerPlaylistId}`,
+        folders.categories.Playlists.providerFileId,
+        archiveFolderName(playlist.title, playlist.providerPlaylistId),
+        'PLAYLIST_FOLDER',
+        {
+          ytbmObjectKey: `playlist:${playlist.providerPlaylistId}`,
+          ytbmSchemaVersion: '1',
+          sourceProvider: 'youtube',
+          providerPlaylistId: playlist.providerPlaylistId,
+          channelId: data.providerChannelId,
+        },
+      );
+      const playlistDocument = PlaylistSidecarSchema.parse({
+        schemaVersion: 1,
+        provider: 'YOUTUBE',
+        providerPlaylistId: playlist.providerPlaylistId,
+        channelId: data.providerChannelId,
+        title: playlist.title,
+        sourceStatus: playlist.sourceStatus,
+        updatedAt: this.now(),
+        items: playlist.items,
+      });
+      await this.putDriveJson(
+        destination,
+        playlistFolder.providerFileId,
+        `playlist:${playlist.providerPlaylistId}:sidecar`,
+        'playlist.json',
+        playlistDocument,
+        context.signal,
+      );
+      playlistEntries.push({
+        providerPlaylistId: playlist.providerPlaylistId,
+        playlistFile: posix.join(
+          'Playlists',
+          archiveFolderName(playlist.title, playlist.providerPlaylistId),
+          'playlist.json',
+        ),
+        mediaIds: playlist.items.map((item) => item.providerMediaId),
+      });
+    }
+    const channelDirectory = archiveFolderName(data.channelTitle, data.providerChannelId);
+    const manifest = ChannelManifestSchema.parse({
+      schemaVersion: 1,
+      provider: 'YOUTUBE',
+      providerChannelId: data.providerChannelId,
+      channelTitle: data.channelTitle,
+      updatedAt: this.now(),
+      media: data.media.map((media) => {
+        const relativeMedia = media.relativePath.startsWith(`${channelDirectory}/`)
+          ? media.relativePath.slice(channelDirectory.length + 1)
+          : media.relativePath;
+        return {
+          providerMediaId: media.providerMediaId,
+          mediaType: media.mediaType,
+          mediaDirectory: posix.dirname(relativeMedia),
+          mediaFile: relativeMedia,
+          metadataFile: posix.join(posix.dirname(relativeMedia), 'metadata.json'),
+          bytes: media.bytes,
+          sha256: media.sha256,
+        };
+      }),
+      playlists: playlistEntries,
+    });
+    await this.putDriveJson(
+      destination,
+      folders.categories.Internal.providerFileId,
+      `channel:${data.providerChannelId}:version`,
+      'version.json',
+      ManifestVersionSchema.parse({ schemaVersion: 1, provider: 'YOUTUBE' }),
+      context.signal,
+    );
+    await this.putDriveJson(
+      destination,
+      folders.categories.Internal.providerFileId,
+      `channel:${data.providerChannelId}:manifest`,
+      'manifest.json',
+      manifest,
+      context.signal,
+    );
+    return { mediaCount: manifest.media.length, playlistCount: manifest.playlists.length };
+  }
+
   private async cleanupStaging(context: JobExecutionContext): Promise<unknown> {
     const media = this.requiredMedia(context);
     const payload = z
@@ -1221,6 +1975,296 @@ export class LocalBackupRuntime {
     }
   }
 
+  private async removeDriveUploadState(context: JobExecutionContext): Promise<void> {
+    this.repository.deleteDriveUploadSession(context.job.id);
+  }
+
+  private requiredGoogleDriveStorage(): GoogleDriveStorageProvider {
+    if (this.googleDriveStorage === null) {
+      throw new BackupOperationError(
+        'INTERNAL_ERROR',
+        'Google Drive storage is not configured in this worker.',
+        { disposition: 'FAIL' },
+      );
+    }
+    return this.googleDriveStorage;
+  }
+
+  private driveCategory(mediaType: BackupMediaContext['mediaType']): 'Videos' | 'Shorts' | 'Live' {
+    if (mediaType === 'SHORT') return 'Shorts';
+    if (mediaType === 'LIVE') return 'Live';
+    return 'Videos';
+  }
+
+  private async ensureDriveRootForDestination(
+    destinationId: string,
+  ): Promise<GoogleDriveObjectStat> {
+    const drive = this.requiredGoogleDriveStorage();
+    const destination = this.repository.getGoogleDriveDestination(destinationId);
+    const known = this.repository.getProviderObject(destinationId, 'root');
+    const ensured = await drive.ensureFolder({
+      destination,
+      knownProviderId: destination.providerRootId ?? known?.providerObjectId ?? null,
+      parentProviderId: null,
+      name: GOOGLE_DRIVE_ROOT_NAME,
+      logicalKey: 'root',
+      appProperties: {
+        ytbmObjectKey: 'root',
+        ytbmSchemaVersion: '1',
+        artifactType: 'backup-root',
+      },
+    });
+    this.repository.setGoogleDriveRoot(destinationId, ensured.providerFolderId);
+    this.repository.upsertProviderObject({
+      destinationId,
+      logicalKey: 'root',
+      objectType: 'ROOT_FOLDER',
+      providerObjectId: ensured.providerFolderId,
+      parentProviderObjectId: ensured.parentProviderId,
+      currentName: ensured.name,
+    });
+    const current = await drive.stat({
+      destination: this.repository.getGoogleDriveDestination(destinationId),
+      providerFileId: ensured.providerFolderId,
+    });
+    if (current === null) {
+      throw new BackupOperationError(
+        'PROVIDER_OBJECT_MISSING',
+        'The Google Drive backup root disappeared during setup.',
+        { disposition: 'RETRY' },
+      );
+    }
+    return current;
+  }
+
+  private async ensureDriveFolder(
+    destination: ReturnType<LocalBackupRepository['getGoogleDriveDestination']>,
+    logicalKey: string,
+    parentProviderId: string,
+    name: string,
+    objectType: string,
+    appProperties: Readonly<Record<string, string>>,
+  ): Promise<GoogleDriveObjectStat> {
+    const drive = this.requiredGoogleDriveStorage();
+    const known = this.repository.getProviderObject(destination.id, logicalKey);
+    const ensured = await drive.ensureFolder({
+      destination,
+      knownProviderId: known?.providerObjectId ?? null,
+      parentProviderId,
+      name,
+      logicalKey,
+      appProperties,
+    });
+    this.repository.upsertProviderObject({
+      destinationId: destination.id,
+      logicalKey,
+      objectType,
+      providerObjectId: ensured.providerFolderId,
+      parentProviderObjectId: ensured.parentProviderId,
+      currentName: ensured.name,
+    });
+    const current = await drive.stat({
+      destination,
+      providerFileId: ensured.providerFolderId,
+    });
+    if (current === null) {
+      throw new BackupOperationError(
+        'PROVIDER_OBJECT_MISSING',
+        'A Google Drive backup folder disappeared during setup.',
+        { disposition: 'RETRY' },
+      );
+    }
+    return current;
+  }
+
+  private async ensureDriveChannelFolders(
+    destinationId: string,
+    providerChannelId: string,
+    channelTitle: string,
+  ): Promise<{
+    channel: GoogleDriveObjectStat;
+    categories: Record<
+      'Videos' | 'Shorts' | 'Live' | 'Playlists' | 'Internal',
+      GoogleDriveObjectStat
+    >;
+  }> {
+    const root = await this.ensureDriveRootForDestination(destinationId);
+    const destination = this.repository.getGoogleDriveDestination(destinationId);
+    const channel = await this.ensureDriveFolder(
+      destination,
+      `channel:${providerChannelId}`,
+      root.providerFileId,
+      archiveFolderName(channelTitle, providerChannelId),
+      'CHANNEL_FOLDER',
+      {
+        ytbmObjectKey: `channel:${providerChannelId}`,
+        ytbmSchemaVersion: '1',
+        sourceProvider: 'youtube',
+        channelId: providerChannelId,
+      },
+    );
+    const categories = {} as Record<
+      'Videos' | 'Shorts' | 'Live' | 'Playlists' | 'Internal',
+      GoogleDriveObjectStat
+    >;
+    for (const [key, name] of [
+      ['Videos', 'Videos'],
+      ['Shorts', 'Shorts'],
+      ['Live', 'Live'],
+      ['Playlists', 'Playlists'],
+      ['Internal', '.ytbackup'],
+    ] as const) {
+      categories[key] = await this.ensureDriveFolder(
+        destination,
+        `channel:${providerChannelId}:folder:${key}`,
+        channel.providerFileId,
+        name,
+        'CATEGORY_FOLDER',
+        {
+          ytbmObjectKey: `channel:${providerChannelId}:folder:${key}`,
+          ytbmSchemaVersion: '1',
+          sourceProvider: 'youtube',
+          channelId: providerChannelId,
+          artifactType: key.toLowerCase(),
+        },
+      );
+    }
+    return { channel, categories };
+  }
+
+  private async ensureDriveMediaFolder(
+    destination: ReturnType<LocalBackupRepository['getGoogleDriveDestination']>,
+    media: BackupMediaContext,
+  ): Promise<GoogleDriveObjectStat> {
+    const folders = await this.ensureDriveChannelFolders(
+      destination.id,
+      media.providerChannelId,
+      media.channelTitle,
+    );
+    const category = this.driveCategory(media.mediaType);
+    return this.ensureDriveFolder(
+      destination,
+      `media:${media.providerMediaId}`,
+      folders.categories[category].providerFileId,
+      archiveFolderName(media.title, media.providerMediaId),
+      'MEDIA_FOLDER',
+      {
+        ytbmObjectKey: `media:${media.providerMediaId}`,
+        ytbmSchemaVersion: '1',
+        sourceProvider: 'youtube',
+        providerMediaId: media.providerMediaId,
+        channelId: media.providerChannelId,
+      },
+    );
+  }
+
+  private async putDriveJson(
+    destination: ReturnType<LocalBackupRepository['getGoogleDriveDestination']>,
+    parentProviderId: string,
+    logicalKey: string,
+    name: string,
+    value: unknown,
+    signal: AbortSignal,
+  ): Promise<GoogleDriveObjectStat> {
+    const content = new TextEncoder().encode(serializeDeterministicJson(value));
+    const hash = hashBytes(content);
+    const known = this.repository.getProviderObject(destination.id, logicalKey);
+    const uploaded = await this.requiredGoogleDriveStorage().putContent({
+      destination,
+      parentProviderId,
+      name,
+      mimeType: 'application/json',
+      content,
+      appProperties: {
+        ytbmObjectKey: logicalKey,
+        ytbmSchemaVersion: '1',
+        artifactType: 'json-sidecar',
+        sha256: hash.sha256,
+      },
+      knownProviderFileId: known?.providerObjectId ?? null,
+      signal,
+    });
+    this.repository.upsertProviderObject({
+      destinationId: destination.id,
+      logicalKey,
+      objectType: 'JSON_SIDECAR',
+      providerObjectId: uploaded.providerFileId,
+      parentProviderObjectId: uploaded.parents[0] ?? parentProviderId,
+      currentName: uploaded.name,
+    });
+    return uploaded;
+  }
+
+  private async resolveVerifiedTransferSource(
+    context: JobExecutionContext,
+    payload: z.infer<typeof CopyJobPayloadSchema>,
+  ): Promise<VerifiedTransferSource> {
+    if (payload.sourceCopyId !== null) {
+      const sourceCopy = this.repository.getMediaCopy(payload.sourceCopyId);
+      if (
+        sourceCopy.destinationType !== 'FILESYSTEM' ||
+        sourceCopy.status !== 'VERIFIED' ||
+        sourceCopy.relativePath === null ||
+        sourceCopy.sha256 === null ||
+        sourceCopy.bytes === null ||
+        sourceCopy.container === null
+      ) {
+        throw new BackupOperationError(
+          'COPY_MISSING',
+          'The selected local upload source is not verified.',
+          { disposition: 'FAIL' },
+        );
+      }
+      const sourceDestination = this.repository.getDestination(sourceCopy.destinationId);
+      const sourceRoot = await this.storage.resolveCurrentRoot(sourceDestination);
+      if (sourceRoot === null) throw this.disconnected();
+      const path = resolvePathUnderRoot(sourceRoot, sourceCopy.relativePath);
+      await assertPathPhysicallyUnderRoot(sourceRoot, path);
+      const verified = await verifyFileSha256(path, sourceCopy.sha256, sourceCopy.bytes, {
+        signal: context.signal,
+      });
+      if (!verified.verified) {
+        this.repository.markMediaCopyFailure(sourceCopy.id, 'CORRUPT', 'COPY_CORRUPT');
+        throw new BackupOperationError(
+          'COPY_CORRUPT',
+          'The existing local upload source failed SHA-256 verification.',
+          { disposition: 'FAIL' },
+        );
+      }
+      return {
+        path,
+        container: sourceCopy.container,
+        videoCodec: sourceCopy.videoCodec,
+        audioCodec: sourceCopy.audioCodec,
+        width: sourceCopy.width,
+        height: sourceCopy.height,
+        fps: sourceCopy.fps,
+        bytes: sourceCopy.bytes,
+        sha256: sourceCopy.sha256,
+        qualityProfile: sourceCopy.qualityProfile ?? payload.qualityProfile,
+        reference: { kind: 'LOCAL_COPY', copyId: sourceCopy.id },
+      };
+    }
+    const stagingDependency =
+      this.repository.getDependencyResult(context.job.id, 'VERIFY_STAGING_MEDIA') ??
+      this.repository.getDependencyResult(context.job.id, 'DOWNLOAD_FROM_GOOGLE_DRIVE');
+    const staging = StagingResultSchema.parse(stagingDependency);
+    await this.assertStagingPath(staging.path, false);
+    return {
+      path: staging.path,
+      container: staging.container,
+      videoCodec: staging.videoCodec,
+      audioCodec: staging.audioCodec,
+      width: staging.width,
+      height: staging.height,
+      fps: staging.fps,
+      bytes: staging.bytes,
+      sha256: staging.sha256,
+      qualityProfile: staging.qualityProfile,
+      reference: { kind: 'STAGING', generation: staging.generation },
+    };
+  }
+
   private disconnected(): BackupOperationError {
     return new BackupOperationError(
       'DESTINATION_DISCONNECTED',
@@ -1232,7 +2276,7 @@ export class LocalBackupRuntime {
   }
 
   private scheduleDestinationRefresh(): void {
-    if (this.refreshPromise !== null) return;
+    if (this.stopping || this.refreshPromise !== null) return;
     this.refreshPromise = this.refreshDestinationState().finally(() => {
       this.refreshPromise = null;
     });
@@ -1243,7 +2287,7 @@ export class LocalBackupRuntime {
       await this.probeAllDestinations();
       await this.reconcileVerifiedCopyPresence({ exhaust: false });
     } catch (error) {
-      this.options.logger.warn('Local backup presence reconciliation could not complete', {
+      this.options.logger.warn('Backup destination presence reconciliation could not complete', {
         errorCode: nodeErrorCode(error),
       });
     }
@@ -1276,6 +2320,45 @@ export class LocalBackupRuntime {
   }
 
   private async reconcileVerifiedCopy(copy: MediaCopyContext): Promise<void> {
+    if (copy.destinationType === 'GOOGLE_DRIVE') {
+      if (copy.providerFileId === null) {
+        this.recordCopyProblem(copy, 'MISSING', 'COPY_MISSING');
+        return;
+      }
+      const destination = this.repository.getGoogleDriveDestination(copy.destinationId);
+      try {
+        const current = await this.requiredGoogleDriveStorage().stat({
+          destination,
+          providerFileId: copy.providerFileId,
+        });
+        if (current === null) {
+          this.recordCopyProblem(copy, 'MISSING', 'COPY_MISSING');
+        } else if (
+          (copy.bytes !== null && current.bytes !== copy.bytes) ||
+          (copy.sha256 !== null && current.appProperties.sha256 !== copy.sha256) ||
+          current.appProperties.providerMediaId !==
+            this.repository.getMediaContext(copy.mediaItemId).providerMediaId
+        ) {
+          this.recordCopyProblem(copy, 'CORRUPT', 'COPY_CORRUPT');
+        } else {
+          this.repository.upsertProviderObject({
+            destinationId: copy.destinationId,
+            logicalKey: `media:${this.repository.getMediaContext(copy.mediaItemId).providerMediaId}:video`,
+            objectType: 'VIDEO',
+            providerObjectId: current.providerFileId,
+            parentProviderObjectId: current.parents[0] ?? null,
+            currentName: current.name,
+          });
+        }
+      } catch (error) {
+        if (error instanceof BackupOperationError && error.code === 'AUTH_REVOKED') return;
+        this.options.logger.warn('A verified Google Drive copy could not be checked', {
+          mediaId: copy.mediaItemId,
+          errorCode: error instanceof BackupOperationError ? error.code : nodeErrorCode(error),
+        });
+      }
+      return;
+    }
     if (copy.relativePath === null) {
       this.recordCopyProblem(copy, 'MISSING', 'COPY_MISSING');
       return;
@@ -1310,13 +2393,20 @@ export class LocalBackupRuntime {
   ): void {
     if (!this.repository.markMediaCopyFailure(copy.id, status, errorCode)) return;
     this.repository.recordActivity({
-      eventType: status === 'MISSING' ? 'LOCAL_COPY_MISSING' : 'LOCAL_COPY_CORRUPT',
+      eventType:
+        copy.destinationType === 'GOOGLE_DRIVE'
+          ? status === 'MISSING'
+            ? 'GOOGLE_DRIVE_COPY_MISSING'
+            : 'GOOGLE_DRIVE_COPY_CORRUPT'
+          : status === 'MISSING'
+            ? 'LOCAL_COPY_MISSING'
+            : 'LOCAL_COPY_CORRUPT',
       mediaItemId: copy.mediaItemId,
       destinationId: copy.destinationId,
       summary:
         status === 'MISSING'
-          ? 'A previously verified local media copy is missing.'
-          : 'A previously verified local media copy no longer matches its expected size.',
+          ? `A previously verified ${copy.destinationType === 'GOOGLE_DRIVE' ? 'Google Drive' : 'local'} media copy is missing.`
+          : `A previously verified ${copy.destinationType === 'GOOGLE_DRIVE' ? 'Google Drive' : 'local'} media copy no longer matches its expected size.`,
       severity: 'WARNING',
       details: { errorCode },
     });
@@ -1325,6 +2415,9 @@ export class LocalBackupRuntime {
   private async probeAllDestinations(): Promise<void> {
     for (const destination of this.repository.listDestinations(true)) {
       await this.probeDestination(destination.id);
+    }
+    for (const destination of this.repository.listGoogleDriveDestinations(true)) {
+      await this.probeGoogleDriveDestination(destination.id);
     }
     this.engine.wake();
   }
@@ -1355,6 +2448,57 @@ export class LocalBackupRuntime {
       volumeSerial: destination.volumeSerial,
       filesystemType: destination.filesystemType,
       lastKnownMountPath: destination.lastKnownMountPath,
+      enabled: destination.enabled,
+      availabilityStatus: probe.availability,
+      availableBytes: probe.availableBytes,
+      totalBytes: probe.totalBytes,
+      lastProbeAt: destination.lastProbeAt,
+      safeMessage: probe.safeMessage,
+    });
+  }
+
+  private async probeGoogleDriveDestination(destinationId: string): Promise<DestinationProbe> {
+    const destination = this.repository.getGoogleDriveDestination(destinationId);
+    if (this.googleDriveStorage === null) {
+      const probe: DestinationProbe = {
+        availability: 'ERROR',
+        availableBytes: null,
+        totalBytes: null,
+        identity: null,
+        safeMessage: 'Google Drive storage is not configured in this worker.',
+      };
+      this.repository.updateGoogleDriveDestinationProbe(
+        destinationId,
+        probe.availability,
+        'INTERNAL_ERROR',
+      );
+      return probe;
+    }
+    const probe = await this.googleDriveStorage.probe(destination);
+    this.repository.updateGoogleDriveDestinationProbe(
+      destinationId,
+      probe.availability,
+      errorCodeForProbe(probe),
+    );
+    if (probe.availability === 'AVAILABLE') {
+      this.jobs.unblockDestination(destinationId, this.now());
+    }
+    return probe;
+  }
+
+  private googleDriveDestinationDto(
+    destinationId: string,
+    probe: DestinationProbe,
+  ): DestinationDto {
+    const destination = this.repository.getGoogleDriveDestination(destinationId);
+    return DestinationDtoSchema.parse({
+      id: destination.id,
+      destinationType: 'GOOGLE_DRIVE',
+      accountId: destination.accountId,
+      accountEmail: destination.accountEmail,
+      accountDisplayName: destination.accountDisplayName,
+      providerRootId: destination.providerRootId,
+      rootName: GOOGLE_DRIVE_ROOT_NAME,
       enabled: destination.enabled,
       availabilityStatus: probe.availability,
       availableBytes: probe.availableBytes,

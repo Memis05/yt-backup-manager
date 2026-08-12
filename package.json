@@ -10,7 +10,7 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "dev": "corepack pnpm -r --filter './packages/**' build && corepack pnpm --filter @ytbm/desktop dev",
+    "dev": "corepack pnpm -r --filter ./packages/** build && corepack pnpm --filter @ytbm/desktop dev",
     "build": "corepack pnpm -r --if-present build",
     "package:dir": "node scripts/verify-managed-binaries.mjs && corepack pnpm build && corepack pnpm --filter @ytbm/desktop package:dir",
     "test:package-smoke": "node scripts/packaged-worker-smoke.mjs",

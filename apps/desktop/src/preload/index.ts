@@ -13,11 +13,13 @@ import {
   ChannelsListResultSchema,
   DestinationsListResultSchema,
   DestinationDtoSchema,
+  DashboardSummarySchema,
   FoundationStatusSchema,
   LibraryQueryResultSchema,
   MediaBackupDetailsSchema,
   OAuthBeginResultSchema,
   OAuthFlowDtoSchema,
+  OpenGoogleDriveObjectResultSchema,
   OpenVerifiedCopyFolderResultSchema,
   PlaylistMembersQuerySchema,
   PlaylistMembersResultSchema,
@@ -38,11 +40,13 @@ import {
   type ChannelBackupSettingsDto,
   type ChannelBackupSettingsPatch,
   type DestinationDto,
+  type DashboardSummary,
   type FoundationStatus,
   type LibraryQueryResult,
   type MediaBackupDetails,
   type OAuthBeginResult,
   type OAuthFlowDto,
+  type OpenGoogleDriveObjectResult,
   type OpenVerifiedCopyFolderResult,
   type PlaylistMembersQuery,
   type PlaylistMembersResult,
@@ -55,6 +59,7 @@ import {
   type RunControlAction,
   type SourceSyncJobDto,
   type ToolDiagnostics,
+  type GoogleOAuthCapability,
 } from '@ytbm/core';
 import { DESKTOP_IPC_CHANNELS } from '@ytbm/ipc/renderer';
 
@@ -66,7 +71,10 @@ export interface YouTubeBackupManagerApi {
   ): Promise<AppSettings>;
   openLogFolder(): Promise<void>;
   listAccounts(): Promise<AccountDto[]>;
-  beginGoogleOAuth(accountId?: string | null): Promise<OAuthBeginResult>;
+  beginGoogleOAuth(
+    accountId?: string | null,
+    capability?: GoogleOAuthCapability,
+  ): Promise<OAuthBeginResult>;
   getOAuthStatus(flowId: string): Promise<OAuthFlowDto>;
   disconnectAccount(accountId: string): Promise<AccountDto>;
   discoverChannels(accountId: string): Promise<ChannelDto[]>;
@@ -81,6 +89,7 @@ export interface YouTubeBackupManagerApi {
   queryPlaylists(query: PlaylistQuery): Promise<PlaylistQueryResult>;
   queryPlaylistMembers(query: PlaylistMembersQuery): Promise<PlaylistMembersResult>;
   addFilesystemDestination(): Promise<DestinationDto | null>;
+  addGoogleDriveDestination(accountId: string): Promise<DestinationDto>;
   listDestinations(): Promise<DestinationDto[]>;
   disableDestination(destinationId: string): Promise<void>;
   getChannelBackupSettings(channelId: string): Promise<ChannelBackupSettingsDto>;
@@ -92,6 +101,11 @@ export interface YouTubeBackupManagerApi {
   controlJob(jobId: string, action: JobControlAction): Promise<QueueJobDto>;
   getMediaBackupDetails(mediaItemId: string): Promise<MediaBackupDetails>;
   openVerifiedCopyFolder(mediaCopyId: string): Promise<OpenVerifiedCopyFolderResult>;
+  openGoogleDriveObject(input: {
+    mediaCopyId?: string;
+    destinationId?: string;
+  }): Promise<OpenGoogleDriveObjectResult>;
+  getDashboardSummary(): Promise<DashboardSummary>;
   getToolDiagnostics(): Promise<ToolDiagnostics>;
 }
 
@@ -121,9 +135,13 @@ const api: YouTubeBackupManagerApi = Object.freeze({
     const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.accountsList, {});
     return AccountsListResultSchema.parse(response).accounts;
   },
-  async beginGoogleOAuth(accountId: string | null = null): Promise<OAuthBeginResult> {
+  async beginGoogleOAuth(
+    accountId: string | null = null,
+    capability: GoogleOAuthCapability = 'YOUTUBE',
+  ): Promise<OAuthBeginResult> {
     const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.beginGoogleOAuth, {
       accountId,
+      capability,
     });
     return OAuthBeginResultSchema.parse(response);
   },
@@ -190,6 +208,12 @@ const api: YouTubeBackupManagerApi = Object.freeze({
     }
     throw new Error('The destination picker returned an invalid result.');
   },
+  async addGoogleDriveDestination(accountId: string): Promise<DestinationDto> {
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.addGoogleDriveDestination, {
+      accountId,
+    });
+    return DestinationDtoSchema.parse(response);
+  },
   async listDestinations(): Promise<DestinationDto[]> {
     const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.destinationsList, {});
     return DestinationsListResultSchema.parse(response).destinations;
@@ -251,6 +275,20 @@ const api: YouTubeBackupManagerApi = Object.freeze({
       mediaCopyId,
     });
     return OpenVerifiedCopyFolderResultSchema.parse(response);
+  },
+  async openGoogleDriveObject(input: {
+    mediaCopyId?: string;
+    destinationId?: string;
+  }): Promise<OpenGoogleDriveObjectResult> {
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.openGoogleDriveObject, {
+      mediaCopyId: input.mediaCopyId ?? null,
+      destinationId: input.destinationId ?? null,
+    });
+    return OpenGoogleDriveObjectResultSchema.parse(response);
+  },
+  async getDashboardSummary(): Promise<DashboardSummary> {
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.dashboardSummary, {});
+    return DashboardSummarySchema.parse(response);
   },
   async getToolDiagnostics(): Promise<ToolDiagnostics> {
     const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.toolDiagnostics, {});

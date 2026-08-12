@@ -32,6 +32,7 @@ interface JobRow {
   media_title: string | null;
   destination_id: string | null;
   destination_path: string | null;
+  destination_type: 'FILESYSTEM' | 'GOOGLE_DRIVE' | null;
   job_type: string;
   status: string;
   priority: number;
@@ -91,6 +92,7 @@ function queueDto(row: JobRow): QueueJobDto {
     mediaTitle: row.media_title,
     destinationId: row.destination_id,
     destinationPath: row.destination_path,
+    destinationType: row.destination_type,
     jobType: row.job_type,
     status: row.status,
     priority: row.priority,
@@ -109,10 +111,15 @@ function queueDto(row: JobRow): QueueJobDto {
   });
 }
 
-const SELECT_JOB = `select j.*, m.title as media_title, d.root_path as destination_path
+const SELECT_JOB = `select j.*, m.title as media_title,
+  case when d.destination_type = 'GOOGLE_DRIVE'
+    then 'Google Drive' || case when a.email is null then '' else ' - ' || a.email end
+    else d.root_path end as destination_path,
+  d.destination_type
   from jobs j
   left join media_items m on m.id = j.media_item_id
-  left join destinations d on d.id = j.destination_id`;
+  left join destinations d on d.id = j.destination_id
+  left join accounts a on a.id = d.account_id`;
 
 export class DurableJobSqlRepository implements DurableJobRepository {
   public constructor(private readonly database: WorkerDatabase) {}
@@ -360,7 +367,7 @@ export class DurableJobSqlRepository implements DurableJobRepository {
         .prepare(
           `select count(distinct mc.media_item_id) as count from media_copies mc
            join destinations d on d.id = mc.destination_id
-           where mc.status = 'VERIFIED' and mc.verified_at is not null and d.root_path is not null`,
+           where mc.status = 'VERIFIED' and mc.verified_at is not null`,
         )
         .get() as { count: number }
     ).count;
@@ -373,13 +380,16 @@ export class DurableJobSqlRepository implements DurableJobRepository {
       const rows = this.database.sqlite
         .prepare(
           `select m.id as media_item_id, m.title as media_title,
-            group_concat(d.root_path, char(31)) as destination_paths,
+            group_concat(case when d.destination_type = 'GOOGLE_DRIVE'
+              then 'Google Drive' || case when a.email is null then '' else ' - ' || a.email end
+              else d.root_path end, char(31)) as destination_paths,
             count(*) as verified_copy_count, max(mc.bytes) as bytes,
             max(mc.verified_at) as verified_at
            from media_copies mc
            join media_items m on m.id = mc.media_item_id
            join destinations d on d.id = mc.destination_id
-           where mc.status = 'VERIFIED' and mc.verified_at is not null and d.root_path is not null
+           left join accounts a on a.id = d.account_id
+           where mc.status = 'VERIFIED' and mc.verified_at is not null
            group by m.id, m.title
            order by verified_at desc, m.title collate nocase
            limit ? offset ?`,
@@ -501,7 +511,8 @@ export class DurableJobSqlRepository implements DurableJobRepository {
     return this.database.sqlite
       .prepare(
         `update jobs set status = 'READY', error_code = null, error_message_safe = null, updated_at = ?
-         where destination_id = ? and status = 'BLOCKED' and error_code = 'DESTINATION_DISCONNECTED'`,
+         where destination_id = ? and status = 'BLOCKED'
+           and error_code in ('DESTINATION_DISCONNECTED','AUTH_REVOKED','NETWORK_UNAVAILABLE')`,
       )
       .run(now, destinationId).changes;
   }

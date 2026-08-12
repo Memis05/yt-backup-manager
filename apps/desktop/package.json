@@ -26,6 +26,7 @@
     "@ytbm/source-youtube": "workspace:*",
     "@ytbm/storage-core": "workspace:*",
     "@ytbm/storage-filesystem": "workspace:*",
+    "@ytbm/storage-google-drive": "workspace:*",
     "better-sqlite3": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",

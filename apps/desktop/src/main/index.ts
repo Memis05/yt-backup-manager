@@ -108,7 +108,21 @@ async function runDesktop(): Promise<void> {
     new JsonLinesFileSink(join(config.paths.logs, 'desktop-main.jsonl')),
   );
   const workerManager = new DesktopWorkerManager(app, config, logger);
-  const worker = await workerManager.connect();
+  let worker: WorkerRpcClient;
+  try {
+    worker = await workerManager.connect();
+  } catch (error) {
+    logger.error('Desktop startup could not connect to the backup worker', {
+      exceptionType: error instanceof Error ? error.name : typeof error,
+    });
+    dialog.showErrorBox(
+      'YouTube Backup Manager could not start',
+      `The background backup worker could not start. Close any existing app processes and try again. Diagnostic logs are available at:\n${config.paths.logs}`,
+    );
+    workerManager.disconnect();
+    app.quit();
+    return;
+  }
   const window = new BrowserWindow(
     createWindowOptions(join(import.meta.dirname, '../preload/index.cjs')),
   );

@@ -67,6 +67,7 @@ const handlers: WorkerRpcHandlers = {
   }),
   'accounts.oauthStatus': ({ flowId }) => ({
     flowId,
+    capability: 'YOUTUBE',
     status: 'EXPIRED',
     expiresAt: 1,
     account: null,
@@ -82,7 +83,12 @@ const handlers: WorkerRpcHandlers = {
     displayName: 'Owner',
     avatarUrl: null,
     connectionState: 'DISCONNECTED',
-    capabilities: { youtubeReadonly: true, grantedScopes: [] },
+    capabilities: {
+      youtubeReadonly: true,
+      driveFile: false,
+      driveConnectionState: 'AUTHORIZATION_REQUIRED',
+      grantedScopes: [],
+    },
     connectedAt: 1,
     lastAuthAt: 1,
     lastErrorCode: null,
@@ -133,6 +139,7 @@ const handlers: WorkerRpcHandlers = {
   'playlists.query': ({ page, pageSize }) => ({ items: [], total: 0, page, pageSize }),
   'playlists.members': ({ page, pageSize }) => ({ items: [], total: 0, page, pageSize }),
   'destinations.addFilesystem': unimplemented,
+  'destinations.addGoogleDrive': unimplemented,
   'destinations.list': unimplemented,
   'destinations.disable': unimplemented,
   'backup.channelSettings': unimplemented,
@@ -144,6 +151,8 @@ const handlers: WorkerRpcHandlers = {
   'jobs.control': unimplemented,
   'media.backupDetails': unimplemented,
   'media.resolveVerifiedFolder': unimplemented,
+  'storage.resolveGoogleDriveObject': unimplemented,
+  'dashboard.summary': unimplemented,
   'tools.diagnostics': unimplemented,
 };
 
@@ -176,6 +185,35 @@ describe('authenticated worker RPC transport', () => {
 
     await expect(client.request('worker.health', {})).rejects.toMatchObject({
       code: 'UNAUTHORIZED',
+    });
+
+    client.close();
+    await server.stop();
+  });
+
+  it('supports a longer deadline for a durable request without weakening the default', async () => {
+    const pipe = endpoint();
+    const token = randomBytes(32).toString('hex');
+    const delayedHandlers: WorkerRpcHandlers = {
+      ...handlers,
+      'worker.health': async () => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return {
+          status: 'READY',
+          instanceId,
+          mode: 'DIRECT',
+          startedAt: '2026-08-11T00:00:00.000Z',
+          uptimeMs: 100,
+        };
+      },
+    };
+    const server = new WorkerRpcServer(pipe, token, delayedHandlers);
+    const client = new WorkerRpcClient(pipe, token, { requestTimeoutMs: 10 });
+    await server.start();
+
+    await expect(client.request('worker.health', {})).rejects.toMatchObject({ code: 'TIMEOUT' });
+    await expect(client.request('worker.health', {}, { timeoutMs: 250 })).resolves.toMatchObject({
+      instanceId,
     });
 
     client.close();

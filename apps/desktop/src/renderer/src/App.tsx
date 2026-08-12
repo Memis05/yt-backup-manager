@@ -6,6 +6,7 @@ import type {
   ChannelDto,
   ChannelBackupSettingsDto,
   DestinationDto,
+  DashboardSummary,
   FoundationStatus,
   JobStatus,
   LibraryQueryResult,
@@ -20,9 +21,11 @@ import type {
   SourceStatus,
   SourceSyncJobDto,
   ToolDiagnostics,
+  GoogleOAuthCapability,
 } from '@ytbm/core';
 
-type Section = 'accounts' | 'channels' | 'library' | 'playlists' | 'backup' | 'queue' | 'storage';
+type Section =
+  'dashboard' | 'accounts' | 'channels' | 'library' | 'playlists' | 'backup' | 'queue' | 'storage';
 type LibraryView = 'grid' | 'list';
 
 const QUEUE_PAGE_SIZE = 50;
@@ -46,6 +49,7 @@ function queueStatusLabel(status: JobStatus): string {
 }
 
 const NAVIGATION: Array<{ id: Section; label: string }> = [
+  { id: 'dashboard', label: 'Dashboard' },
   { id: 'accounts', label: 'Accounts' },
   { id: 'channels', label: 'Channels' },
   { id: 'library', label: 'Library' },
@@ -93,6 +97,12 @@ function formatBytes(bytes: number | null): string {
     unit = units[index]!;
   }
   return `${value.toFixed(value >= 10 ? 1 : 2)} ${unit}`;
+}
+
+function destinationLabel(destination: DestinationDto): string {
+  return destination.destinationType === 'FILESYSTEM'
+    ? destination.rootPath
+    : `${destination.rootName} · ${destination.accountEmail ?? destination.accountDisplayName ?? 'Google account'}`;
 }
 
 function StatePill({ children, tone = 'neutral' }: { children: ReactNode; tone?: string }) {
@@ -155,7 +165,7 @@ function Pager({
 }
 
 export function App() {
-  const [section, setSection] = useState<Section>('accounts');
+  const [section, setSection] = useState<Section>('dashboard');
   const [foundation, setFoundation] = useState<FoundationStatus | null>(null);
   const [accounts, setAccounts] = useState<AccountDto[]>([]);
   const [channels, setChannels] = useState<ChannelDto[]>([]);
@@ -174,6 +184,7 @@ export function App() {
   const [queuePage, setQueuePage] = useState(1);
   const [mediaDetails, setMediaDetails] = useState<MediaBackupDetails | null>(null);
   const [toolDiagnostics, setToolDiagnostics] = useState<ToolDiagnostics | null>(null);
+  const [dashboard, setDashboard] = useState<DashboardSummary | null>(null);
 
   const [libraryView, setLibraryView] = useState<LibraryView>('grid');
   const [librarySearch, setLibrarySearch] = useState('');
@@ -206,19 +217,21 @@ export function App() {
   const [playlistMembers, setPlaylistMembers] = useState<PlaylistMembersResult | null>(null);
 
   const refreshCore = useCallback(async () => {
-    const [foundationStatus, accountItems, channelItems, destinationItems, tools] =
+    const [foundationStatus, accountItems, channelItems, destinationItems, tools, summary] =
       await Promise.all([
         window.ytbm.getFoundationStatus(),
         window.ytbm.listAccounts(),
         window.ytbm.listChannels(),
         window.ytbm.listDestinations(),
         window.ytbm.getToolDiagnostics(),
+        window.ytbm.getDashboardSummary(),
       ]);
     setFoundation(foundationStatus);
     setAccounts(accountItems);
     setChannels(channelItems);
     setDestinations(destinationItems);
     setToolDiagnostics(tools);
+    setDashboard(summary);
   }, []);
 
   useEffect(() => {
@@ -229,14 +242,16 @@ export function App() {
       window.ytbm.listChannels(),
       window.ytbm.listDestinations(),
       window.ytbm.getToolDiagnostics(),
+      window.ytbm.getDashboardSummary(),
     ])
-      .then(([foundationStatus, accountItems, channelItems, destinationItems, tools]) => {
+      .then(([foundationStatus, accountItems, channelItems, destinationItems, tools, summary]) => {
         if (!active) return;
         setFoundation(foundationStatus);
         setAccounts(accountItems);
         setChannels(channelItems);
         setDestinations(destinationItems);
         setToolDiagnostics(tools);
+        setDashboard(summary);
       })
       .catch((caught: unknown) => {
         if (active) setError(safeMessage(caught));
@@ -375,30 +390,46 @@ export function App() {
     [channels],
   );
 
-  const connectGoogle = async (accountId: string | null = null): Promise<void> => {
-    setBusy(accountId ?? 'connect');
+  const connectGoogle = async (
+    accountId: string | null = null,
+    capability: GoogleOAuthCapability = 'YOUTUBE',
+  ): Promise<void> => {
+    setBusy(`${capability}:${accountId ?? 'connect'}`);
     setError(null);
     setNotice(null);
     try {
-      const result = await window.ytbm.beginGoogleOAuth(accountId);
+      const result = await window.ytbm.beginGoogleOAuth(accountId, capability);
       if (result.status === 'UNAVAILABLE') {
         setError(result.safeMessage);
         return;
       }
       setOAuthFlow({
         flowId: result.flowId,
+        capability,
         status: 'PENDING',
         expiresAt: result.expiresAt,
         account: null,
         errorCode: null,
         safeMessage: null,
       });
-      setNotice('Google sign-in opened in your system browser. Finish there, then return here.');
+      setNotice(
+        capability === 'GOOGLE_DRIVE'
+          ? 'Google sign-in opened for Drive app-file access. Confirm the same Google identity, then return here.'
+          : 'Google sign-in opened in your system browser. Finish there, then return here.',
+      );
     } catch (caught) {
       setError(safeMessage(caught));
     } finally {
       setBusy(null);
     }
+  };
+
+  const connectDrive = async (accountId: string): Promise<void> => {
+    const confirmed = window.confirm(
+      'Enable Google Drive backup for this account? Google will request access only to Drive files created by this app. You must choose the same Google identity.',
+    );
+    if (!confirmed) return;
+    await connectGoogle(accountId, 'GOOGLE_DRIVE');
   };
 
   const openLogFolder = async (): Promise<void> => {
@@ -492,6 +523,30 @@ export function App() {
     }
   };
 
+  const addDriveDestination = async (accountId: string): Promise<void> => {
+    setBusy(`add-drive:${accountId}`);
+    setError(null);
+    try {
+      await window.ytbm.addGoogleDriveDestination(accountId);
+      await refreshCore();
+      setNotice('Google Drive destination added and probed successfully.');
+    } catch (caught) {
+      setError(safeMessage(caught));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const openDriveDestination = async (destinationId: string): Promise<void> => {
+    setError(null);
+    try {
+      const result = await window.ytbm.openGoogleDriveObject({ destinationId });
+      if (result.status !== 'OPENED') setError(result.safeMessage);
+    } catch (caught) {
+      setError(safeMessage(caught));
+    }
+  };
+
   const saveBackupSettings = async (
     channelId: string,
     qualityProfileOverride: QualityProfile | null,
@@ -562,6 +617,18 @@ export function App() {
     setError(null);
     try {
       const result = await window.ytbm.openVerifiedCopyFolder(mediaCopyId);
+      if (result.status === 'OPENED') return;
+      setError(result.safeMessage);
+      setMediaDetails(await window.ytbm.getMediaBackupDetails(mediaItemId));
+    } catch (caught) {
+      setError(safeMessage(caught));
+    }
+  };
+
+  const openGoogleDriveCopy = async (mediaCopyId: string, mediaItemId: string): Promise<void> => {
+    setError(null);
+    try {
+      const result = await window.ytbm.openGoogleDriveObject({ mediaCopyId });
       if (result.status === 'OPENED') return;
       setError(result.safeMessage);
       setMediaDetails(await window.ytbm.getMediaBackupDetails(mediaItemId));
@@ -644,6 +711,62 @@ export function App() {
           <div className="loading-panel">Connecting to the backup worker…</div>
         ) : null}
 
+        {busy !== 'startup' && section === 'dashboard' ? (
+          <section>
+            <div className="section-heading">
+              <div>
+                <h2>Backup health</h2>
+                <p>Verified coverage across every intended local and Google Drive destination.</p>
+              </div>
+            </div>
+            {dashboard === null ? (
+              <div className="loading-panel">Loading backup health…</div>
+            ) : (
+              <>
+                <div className="dashboard-grid">
+                  <article>
+                    <small>Selected channels</small>
+                    <strong>{dashboard.selectedChannelCount}</strong>
+                  </article>
+                  <article>
+                    <small>Catalog media</small>
+                    <strong>{dashboard.mediaCount}</strong>
+                  </article>
+                  <article>
+                    <small>Verified copies</small>
+                    <strong>
+                      {dashboard.verifiedCopyCount} / {dashboard.intendedCopyCount}
+                    </strong>
+                  </article>
+                  <article>
+                    <small>Verified bytes</small>
+                    <strong>{formatBytes(dashboard.verifiedBytes)}</strong>
+                  </article>
+                  <article>
+                    <small>Local verified</small>
+                    <strong>{dashboard.localVerifiedCount}</strong>
+                  </article>
+                  <article>
+                    <small>Drive verified</small>
+                    <strong>{dashboard.driveVerifiedCount}</strong>
+                  </article>
+                  <article>
+                    <small>Pending</small>
+                    <strong>{dashboard.pendingCopyCount}</strong>
+                  </article>
+                  <article>
+                    <small>Failed</small>
+                    <strong>{dashboard.failedCopyCount}</strong>
+                  </article>
+                </div>
+                <p className="dashboard-last-run">
+                  Last completed backup activity: {formatDate(dashboard.lastBackupAt)}
+                </p>
+              </>
+            )}
+          </section>
+        ) : null}
+
         {busy !== 'startup' && section === 'accounts' ? (
           <section>
             <div className="section-heading">
@@ -695,17 +818,30 @@ export function App() {
                         <p>{account.email ?? 'Email unavailable'}</p>
                       </div>
                     </div>
-                    <StatePill
-                      tone={
-                        account.connectionState === 'CONNECTED'
-                          ? 'success'
-                          : account.connectionState === 'REAUTH_REQUIRED'
-                            ? 'warning'
-                            : 'neutral'
-                      }
-                    >
-                      {account.connectionState.replaceAll('_', ' ')}
-                    </StatePill>
+                    <div className="account-capabilities">
+                      <StatePill
+                        tone={
+                          account.connectionState === 'CONNECTED'
+                            ? 'success'
+                            : account.connectionState === 'REAUTH_REQUIRED'
+                              ? 'warning'
+                              : 'neutral'
+                        }
+                      >
+                        YouTube {account.connectionState.replaceAll('_', ' ')}
+                      </StatePill>
+                      <StatePill
+                        tone={
+                          account.capabilities.driveConnectionState === 'CONNECTED'
+                            ? 'success'
+                            : account.capabilities.driveConnectionState === 'REAUTH_REQUIRED'
+                              ? 'warning'
+                              : 'neutral'
+                        }
+                      >
+                        Drive {account.capabilities.driveConnectionState.replaceAll('_', ' ')}
+                      </StatePill>
+                    </div>
                     <div className="account-actions">
                       {account.connectionState === 'CONNECTED' ? (
                         <button
@@ -724,6 +860,17 @@ export function App() {
                           Reconnect
                         </button>
                       )}
+                      {account.connectionState === 'CONNECTED' ? (
+                        <button
+                          className="button button--secondary"
+                          disabled={busy !== null}
+                          onClick={() => void connectDrive(account.id)}
+                        >
+                          {account.capabilities.driveConnectionState === 'CONNECTED'
+                            ? 'Reconnect Drive'
+                            : 'Enable Drive'}
+                        </button>
+                      ) : null}
                       <button
                         className="button button--danger"
                         disabled={busy !== null || account.connectionState === 'DISCONNECTED'}
@@ -1144,8 +1291,8 @@ export function App() {
           <section>
             <div className="section-heading">
               <div>
-                <h2>Local backup destinations</h2>
-                <p>Internal drives, external volumes, and normal Windows network paths.</p>
+                <h2>Backup destinations</h2>
+                <p>Independent local filesystem and app-owned Google Drive copies.</p>
               </div>
             </div>
             <div className="storage-add">
@@ -1154,8 +1301,28 @@ export function App() {
                 disabled={busy !== null}
                 onClick={() => void addDestination()}
               >
-                Choose folder…
+                Add local folder…
               </button>
+              {accounts
+                .filter((account) => account.capabilities.driveConnectionState === 'CONNECTED')
+                .map((account) => (
+                  <button
+                    className="button button--secondary"
+                    disabled={
+                      busy !== null ||
+                      destinations.some(
+                        (destination) =>
+                          destination.destinationType === 'GOOGLE_DRIVE' &&
+                          destination.accountId === account.id &&
+                          destination.enabled,
+                      )
+                    }
+                    key={account.id}
+                    onClick={() => void addDriveDestination(account.id)}
+                  >
+                    Add Drive · {account.email ?? account.displayName ?? 'Google account'}
+                  </button>
+                ))}
             </div>
             {foundation === null ? null : (
               <div className="storage-add storage-add--settings">
@@ -1200,42 +1367,85 @@ export function App() {
                     {toolDiagnostics.ffmpeg.available ? 'Ready' : 'Unavailable'}
                   </StatePill>
                 </div>
+                <div>
+                  <strong>Google Drive</strong>
+                  <small>
+                    {toolDiagnostics.googleDrive.availableDestinations} of{' '}
+                    {toolDiagnostics.googleDrive.configuredDestinations} destinations available
+                  </small>
+                  <StatePill
+                    tone={
+                      toolDiagnostics.googleDrive.lastSafeErrorCode === null ? 'success' : 'warning'
+                    }
+                  >
+                    {toolDiagnostics.googleDrive.activeUploads} active uploads
+                  </StatePill>
+                </div>
               </div>
             )}
             <div className="destination-list">
               {destinations.length === 0 ? (
                 <EmptyState
-                  title="No local destinations"
-                  detail="Add a writable folder before starting the first media backup."
+                  title="No backup destinations"
+                  detail="Add a writable local folder or authorize Google Drive before starting a backup."
                 />
               ) : (
                 destinations.map((destination) => (
-                  <article className="destination-card" key={destination.id}>
+                  <article
+                    className={`destination-card destination-card--${destination.destinationType.toLowerCase()}`}
+                    key={destination.id}
+                  >
                     <div>
-                      <h3>{destination.rootPath}</h3>
-                      <p>
-                        {destination.filesystemType ?? 'Filesystem'} ·{' '}
-                        {formatBytes(destination.availableBytes)} available
-                      </p>
-                      {destination.volumeSerial !== null ? (
-                        <small>Volume {destination.volumeSerial}</small>
-                      ) : null}
+                      <h3>{destinationLabel(destination)}</h3>
+                      {destination.destinationType === 'FILESYSTEM' ? (
+                        <>
+                          <p>
+                            {destination.filesystemType ?? 'Filesystem'} ·{' '}
+                            {formatBytes(destination.availableBytes)} available
+                          </p>
+                          {destination.volumeSerial !== null ? (
+                            <small>Volume {destination.volumeSerial}</small>
+                          ) : null}
+                        </>
+                      ) : (
+                        <>
+                          <p>Google Drive · {formatBytes(destination.availableBytes)} available</p>
+                          <small>
+                            App-owned My Drive root ·{' '}
+                            {destination.providerRootId === null ? 'pending creation' : 'ready'}
+                          </small>
+                        </>
+                      )}
                     </div>
                     <StatePill
                       tone={destination.availabilityStatus === 'AVAILABLE' ? 'success' : 'warning'}
                     >
                       {destination.availabilityStatus}
                     </StatePill>
-                    <button
-                      className="button button--danger"
-                      onClick={() => {
-                        void window.ytbm.disableDestination(destination.id).then(async () => {
-                          setDestinations(await window.ytbm.listDestinations());
-                        });
-                      }}
-                    >
-                      Disable
-                    </button>
+                    <div className="destination-actions">
+                      {destination.destinationType === 'GOOGLE_DRIVE' &&
+                      destination.providerRootId !== null ? (
+                        <button
+                          className="button button--secondary"
+                          onClick={() => void openDriveDestination(destination.id)}
+                        >
+                          Open in Drive
+                        </button>
+                      ) : null}
+                      <button
+                        className="button button--danger"
+                        onClick={() => {
+                          void window.ytbm
+                            .disableDestination(destination.id)
+                            .then(async () => {
+                              setDestinations(await window.ytbm.listDestinations());
+                            })
+                            .catch((caught: unknown) => setError(safeMessage(caught)));
+                        }}
+                      >
+                        Disable
+                      </button>
+                    </div>
                   </article>
                 ))
               )}
@@ -1247,8 +1457,8 @@ export function App() {
           <section>
             <div className="section-heading">
               <div>
-                <h2>Local backup</h2>
-                <p>Save per-channel destinations and quality, then plan a durable backup run.</p>
+                <h2>Channel backup</h2>
+                <p>Choose local, Google Drive, or both, then plan one durable backup run.</p>
               </div>
             </div>
             <div className="backup-channel-list">
@@ -1304,7 +1514,9 @@ export function App() {
                       <legend>Destinations</legend>
                       {destinations.filter((destination) => destination.enabled).length === 0 ? (
                         <div className="destination-picker__empty">
-                          <span>Add a local destination before starting a backup.</span>
+                          <span>
+                            Add a local or Google Drive destination before starting a backup.
+                          </span>
                           <button
                             className="button button--secondary"
                             onClick={() => setSection('storage')}
@@ -1332,7 +1544,7 @@ export function App() {
                                 );
                               }}
                             />
-                            <span>{destination.rootPath}</span>
+                            <span>{destinationLabel(destination)}</span>
                             <StatePill
                               tone={
                                 destination.availabilityStatus === 'AVAILABLE'
@@ -1371,7 +1583,7 @@ export function App() {
               {backupRuns.length === 0 ? (
                 <EmptyState
                   title="No backup history"
-                  detail="Start a local backup to create the first run."
+                  detail="Start a backup to create the first run."
                 />
               ) : (
                 backupRuns.map((run) => (
@@ -1685,35 +1897,43 @@ export function App() {
               >
                 ×
               </button>
-              <p className="eyebrow">Local backup details</p>
+              <p className="eyebrow">Backup details</p>
               <h2>{mediaDetails.title}</h2>
               {mediaDetails.copies.length === 0 ? (
                 <EmptyState
-                  title="Local: Missing"
-                  detail="No local copy has been planned for this media yet."
+                  title="No destination copies"
+                  detail="No local or Google Drive copy has been planned for this media yet."
                 />
               ) : (
                 mediaDetails.copies.map((copy) => (
                   <article className="copy-detail" key={copy.id}>
                     <div>
                       <strong>
-                        Local:{' '}
+                        {copy.destinationType === 'FILESYSTEM' ? 'Local' : 'Google Drive'}:{' '}
                         {copy.availabilityStatus === 'DISCONNECTED' && copy.status === 'VERIFIED'
                           ? 'Disconnected'
                           : copy.status}
                       </strong>
                       <p>
                         {copy.destinationPath}
-                        {copy.relativePath === null ? '' : `\\${copy.relativePath}`}
+                        {copy.destinationType === 'FILESYSTEM' && copy.relativePath !== null
+                          ? `\\${copy.relativePath}`
+                          : ''}
                       </p>
                       <small>
                         {formatBytes(copy.bytes)} ·{' '}
                         {copy.height === null ? 'Resolution unknown' : `${copy.height}p`} ·{' '}
-                        {copy.qualityProfile ?? 'Quality pending'}
+                        {copy.qualityProfile ?? 'Quality pending'} ·{' '}
+                        {copy.verificationStrength ?? 'Verification pending'}
                       </small>
+                      {copy.destinationAccountEmail === null ? null : (
+                        <small>{copy.destinationAccountEmail}</small>
+                      )}
                       {copy.sha256 === null ? null : <code>{copy.sha256.slice(0, 16)}…</code>}
                     </div>
-                    {copy.status === 'VERIFIED' && copy.availabilityStatus === 'AVAILABLE' ? (
+                    {copy.destinationType === 'FILESYSTEM' &&
+                    copy.status === 'VERIFIED' &&
+                    copy.availabilityStatus === 'AVAILABLE' ? (
                       <button
                         className="button button--secondary"
                         onClick={() =>
@@ -1721,6 +1941,16 @@ export function App() {
                         }
                       >
                         Open folder
+                      </button>
+                    ) : null}
+                    {copy.destinationType === 'GOOGLE_DRIVE' &&
+                    copy.providerFileIdAvailable &&
+                    copy.availabilityStatus === 'AVAILABLE' ? (
+                      <button
+                        className="button button--secondary"
+                        onClick={() => void openGoogleDriveCopy(copy.id, mediaDetails.mediaItemId)}
+                      >
+                        Open in Drive
                       </button>
                     ) : null}
                   </article>

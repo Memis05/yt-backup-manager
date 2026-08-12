@@ -23,6 +23,10 @@ export interface WorkerRpcClientOptions {
   connectTimeoutMs?: number;
 }
 
+export interface WorkerRpcRequestOptions {
+  timeoutMs?: number;
+}
+
 export class WorkerRpcClient {
   private socket: Socket | null = null;
   private connectPromise: Promise<void> | null = null;
@@ -43,6 +47,7 @@ export class WorkerRpcClient {
   public async request<Method extends WorkerRpcMethod>(
     method: Method,
     params: WorkerRpcParams<Method>,
+    options: WorkerRpcRequestOptions = {},
   ): Promise<WorkerRpcResult<Method>> {
     const contract = WorkerRpcContracts[method];
     const validatedParams = contract.params.parse(params);
@@ -58,7 +63,7 @@ export class WorkerRpcClient {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
         reject(new RpcProtocolError('TIMEOUT', 'Worker RPC request timed out'));
-      }, this.requestTimeoutMs);
+      }, options.timeoutMs ?? this.requestTimeoutMs);
       this.pending.set(id, {
         method,
         resolve: (value) => resolve(value as WorkerRpcResult<Method>),

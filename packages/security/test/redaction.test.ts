@@ -14,6 +14,8 @@ describe('central log redaction', () => {
       code: 'authorization-code-secret',
       codeVerifier: 'pkce-verifier-secret',
       id_token: 'identity-token-secret',
+      sessionUri:
+        'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=secret-session',
     });
 
     expect(JSON.stringify(output)).not.toContain('secret-access');
@@ -23,6 +25,7 @@ describe('central log redaction', () => {
     expect(JSON.stringify(output)).not.toContain('authorization-code-secret');
     expect(JSON.stringify(output)).not.toContain('pkce-verifier-secret');
     expect(JSON.stringify(output)).not.toContain('identity-token-secret');
+    expect(JSON.stringify(output)).not.toContain('secret-session');
     expect(output).toMatchObject({
       accessToken: '[REDACTED]',
       credential_ref: 'google-oauth:01',

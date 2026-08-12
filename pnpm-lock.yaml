@@ -140,6 +140,9 @@ importers:
       '@ytbm/storage-filesystem':
         specifier: workspace:*
         version: link:../../packages/storage-filesystem
+      '@ytbm/storage-google-drive':
+        specifier: workspace:*
+        version: link:../../packages/storage-google-drive
       better-sqlite3:
         specifier: 'catalog:'
         version: 13.0.3
@@ -289,6 +292,15 @@ importers:
       '@ytbm/integrity':
         specifier: workspace:*
         version: link:../integrity
+      '@ytbm/storage-core':
+        specifier: workspace:*
+        version: link:../storage-core
+
+  packages/storage-google-drive:
+    dependencies:
+      '@ytbm/core':
+        specifier: workspace:*
+        version: link:../core
       '@ytbm/storage-core':
         specifier: workspace:*
         version: link:../storage-core

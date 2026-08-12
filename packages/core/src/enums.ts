@@ -84,6 +84,15 @@ export const JobTypeSchema = z.enum([
   'VERIFY_FILESYSTEM_COPY',
   'WRITE_DESTINATION_METADATA',
   'UPDATE_MANIFEST',
+  'ENSURE_GOOGLE_DRIVE_ROOT',
+  'ENSURE_GOOGLE_DRIVE_FOLDER',
+  'UPLOAD_TO_GOOGLE_DRIVE',
+  'VERIFY_GOOGLE_DRIVE_COPY',
+  'DOWNLOAD_FROM_GOOGLE_DRIVE',
+  'RECONCILE_GOOGLE_DRIVE_OBJECT',
+  'UPDATE_GOOGLE_DRIVE_METADATA',
+  'UPDATE_GOOGLE_DRIVE_THUMBNAIL',
+  'UPDATE_GOOGLE_DRIVE_MANIFEST',
   'CLEANUP_STAGING',
 ]);
 export const StagingStateSchema = z.enum([
@@ -113,13 +122,17 @@ export const BackupErrorCodeSchema = z.enum([
   'DESTINATION_FULL',
   'DESTINATION_PERMISSION_DENIED',
   'STAGING_UNAVAILABLE',
+  'STAGING_FULL',
   'DOWNLOAD_FAILED',
   'FFMPEG_FAILED',
   'HASH_FAILED',
   'COPY_FAILED',
+  'UPLOAD_FAILED',
   'VERIFY_FAILED',
   'COPY_MISSING',
   'COPY_CORRUPT',
+  'PROVIDER_OBJECT_MISSING',
+  'RESUMABLE_SESSION_EXPIRED',
   'MANIFEST_INVALID',
   'MANIFEST_WRITE_FAILED',
   'DATABASE_ERROR',
@@ -132,6 +145,12 @@ export const AccountConnectionStateSchema = z.enum([
   'ERROR',
 ]);
 export const OAuthFlowStatusSchema = z.enum(['PENDING', 'COMPLETED', 'FAILED', 'EXPIRED']);
+export const GoogleOAuthCapabilitySchema = z.enum(['YOUTUBE', 'GOOGLE_DRIVE']);
+export const DriveCapabilityStateSchema = z.enum([
+  'AUTHORIZATION_REQUIRED',
+  'CONNECTED',
+  'REAUTH_REQUIRED',
+]);
 export const SourceSyncStatusSchema = z.enum([
   'QUEUED',
   'RUNNING',
@@ -171,5 +190,7 @@ export type StagingState = z.infer<typeof StagingStateSchema>;
 export type BackupErrorCode = z.infer<typeof BackupErrorCodeSchema>;
 export type AccountConnectionState = z.infer<typeof AccountConnectionStateSchema>;
 export type OAuthFlowStatus = z.infer<typeof OAuthFlowStatusSchema>;
+export type GoogleOAuthCapability = z.infer<typeof GoogleOAuthCapabilitySchema>;
+export type DriveCapabilityState = z.infer<typeof DriveCapabilityStateSchema>;
 export type SourceSyncStatus = z.infer<typeof SourceSyncStatusSchema>;
 export type SourceErrorCode = z.infer<typeof SourceErrorCodeSchema>;
