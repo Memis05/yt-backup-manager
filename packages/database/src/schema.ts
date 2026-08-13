@@ -496,6 +496,326 @@ export const driveUploadSessions = sqliteTable(
   ],
 );
 
+export const recoverySessions = sqliteTable(
+  'recovery_sessions',
+  {
+    id: text('id').primaryKey(),
+    status: text('status').notNull(),
+    progressPhase: text('progress_phase'),
+    progressProcessed: integer('progress_processed').notNull().default(0),
+    progressTotal: integer('progress_total'),
+    errorMessageSafe: text('error_message_safe'),
+    cancelRequested: integer('cancel_requested', { mode: 'boolean' }).notNull().default(false),
+    completedAt: integer('completed_at'),
+    ...timestamps(),
+  },
+  (table) => [index('recovery_sessions_status_updated_idx').on(table.status, table.updatedAt)],
+);
+
+export const recoverySources = sqliteTable(
+  'recovery_sources',
+  {
+    id: text('id').primaryKey(),
+    sessionId: text('session_id')
+      .notNull()
+      .references(() => recoverySessions.id, { onDelete: 'cascade' }),
+    sourceType: text('source_type').notNull(),
+    status: text('status').notNull(),
+    label: text('label').notNull(),
+    rootPath: text('root_path'),
+    accountId: text('account_id').references(() => accounts.id),
+    volumeGuid: text('volume_guid'),
+    volumeSerial: text('volume_serial'),
+    filesystemType: text('filesystem_type'),
+    lastKnownMountPath: text('last_known_mount_path'),
+    discoveredRootCount: integer('discovered_root_count').notNull().default(0),
+    errorMessageSafe: text('error_message_safe'),
+    ...timestamps(),
+  },
+  (table) => [
+    index('recovery_sources_session_idx').on(table.sessionId, table.createdAt),
+    index('recovery_sources_account_idx').on(table.accountId),
+  ],
+);
+
+export const recoveryDriveRootSelections = sqliteTable(
+  'recovery_drive_root_selections',
+  {
+    sessionId: text('session_id')
+      .notNull()
+      .references(() => recoverySessions.id, { onDelete: 'cascade' }),
+    sourceId: text('source_id')
+      .notNull()
+      .references(() => recoverySources.id, { onDelete: 'cascade' }),
+    providerRootId: text('provider_root_id').notNull(),
+    selected: integer('selected', { mode: 'boolean' }).notNull().default(true),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.sessionId, table.sourceId, table.providerRootId] }),
+    index('recovery_drive_root_selections_source_idx').on(table.sessionId, table.sourceId),
+  ],
+);
+
+export const recoveryChannels = sqliteTable(
+  'recovery_channels',
+  {
+    id: text('id').primaryKey(),
+    sessionId: text('session_id')
+      .notNull()
+      .references(() => recoverySessions.id, { onDelete: 'cascade' }),
+    sourceId: text('source_id')
+      .notNull()
+      .references(() => recoverySources.id, { onDelete: 'cascade' }),
+    sourceProvider: text('source_provider').notNull(),
+    providerChannelId: text('provider_channel_id').notNull(),
+    title: text('title').notNull(),
+    sourceStatus: text('source_status').notNull(),
+    publishedAt: integer('published_at'),
+    lastSeenAt: integer('last_seen_at'),
+    metadataUpdatedAt: integer('metadata_updated_at').notNull(),
+    ...timestamps(),
+  },
+  (table) => [
+    uniqueIndex('recovery_channels_session_source_provider_uidx').on(
+      table.sessionId,
+      table.sourceId,
+      table.sourceProvider,
+      table.providerChannelId,
+    ),
+    index('recovery_channels_identity_idx').on(
+      table.sessionId,
+      table.sourceProvider,
+      table.providerChannelId,
+    ),
+  ],
+);
+
+export const recoveryMedia = sqliteTable(
+  'recovery_media',
+  {
+    id: text('id').primaryKey(),
+    sessionId: text('session_id')
+      .notNull()
+      .references(() => recoverySessions.id, { onDelete: 'cascade' }),
+    sourceId: text('source_id')
+      .notNull()
+      .references(() => recoverySources.id, { onDelete: 'cascade' }),
+    sourceProvider: text('source_provider').notNull(),
+    providerChannelId: text('provider_channel_id').notNull(),
+    providerMediaId: text('provider_media_id').notNull(),
+    mediaType: text('media_type').notNull(),
+    title: text('title').notNull(),
+    originalTitle: text('original_title').notNull(),
+    sourceUrl: text('source_url').notNull(),
+    sourceStatus: text('source_status').notNull(),
+    publishedAt: integer('published_at'),
+    durationSeconds: integer('duration_seconds'),
+    thumbnailUrl: text('thumbnail_url'),
+    metadataUpdatedAt: integer('metadata_updated_at').notNull(),
+    ...timestamps(),
+  },
+  (table) => [
+    uniqueIndex('recovery_media_session_source_provider_uidx').on(
+      table.sessionId,
+      table.sourceId,
+      table.sourceProvider,
+      table.providerMediaId,
+    ),
+    index('recovery_media_identity_idx').on(
+      table.sessionId,
+      table.sourceProvider,
+      table.providerMediaId,
+    ),
+  ],
+);
+
+export const recoveryPlaylists = sqliteTable(
+  'recovery_playlists',
+  {
+    id: text('id').primaryKey(),
+    sessionId: text('session_id')
+      .notNull()
+      .references(() => recoverySessions.id, { onDelete: 'cascade' }),
+    sourceId: text('source_id')
+      .notNull()
+      .references(() => recoverySources.id, { onDelete: 'cascade' }),
+    sourceProvider: text('source_provider').notNull(),
+    providerChannelId: text('provider_channel_id').notNull(),
+    providerPlaylistId: text('provider_playlist_id').notNull(),
+    title: text('title').notNull(),
+    sourceStatus: text('source_status').notNull(),
+    metadataUpdatedAt: integer('metadata_updated_at').notNull(),
+    ...timestamps(),
+  },
+  (table) => [
+    uniqueIndex('recovery_playlists_session_source_provider_uidx').on(
+      table.sessionId,
+      table.sourceId,
+      table.sourceProvider,
+      table.providerPlaylistId,
+    ),
+    index('recovery_playlists_identity_idx').on(
+      table.sessionId,
+      table.sourceProvider,
+      table.providerPlaylistId,
+    ),
+  ],
+);
+
+export const recoveryPlaylistItems = sqliteTable(
+  'recovery_playlist_items',
+  {
+    sessionId: text('session_id')
+      .notNull()
+      .references(() => recoverySessions.id, { onDelete: 'cascade' }),
+    sourceId: text('source_id')
+      .notNull()
+      .references(() => recoverySources.id, { onDelete: 'cascade' }),
+    providerPlaylistId: text('provider_playlist_id').notNull(),
+    providerMediaId: text('provider_media_id').notNull(),
+    position: integer('position'),
+    metadataUpdatedAt: integer('metadata_updated_at').notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.sessionId, table.sourceId, table.providerPlaylistId, table.providerMediaId],
+    }),
+    index('recovery_playlist_items_playlist_idx').on(table.sessionId, table.providerPlaylistId),
+  ],
+);
+
+export const recoveryCopies = sqliteTable(
+  'recovery_copies',
+  {
+    id: text('id').primaryKey(),
+    sessionId: text('session_id')
+      .notNull()
+      .references(() => recoverySessions.id, { onDelete: 'cascade' }),
+    sourceId: text('source_id')
+      .notNull()
+      .references(() => recoverySources.id, { onDelete: 'cascade' }),
+    providerRootId: text('provider_root_id'),
+    sourceProvider: text('source_provider').notNull(),
+    providerMediaId: text('provider_media_id').notNull(),
+    destinationType: text('destination_type').notNull(),
+    relativePath: text('relative_path'),
+    providerFileId: text('provider_file_id'),
+    container: text('container'),
+    videoCodec: text('video_codec'),
+    audioCodec: text('audio_codec'),
+    width: integer('width'),
+    height: integer('height'),
+    fps: real('fps'),
+    bytes: integer('bytes'),
+    sha256: text('sha256'),
+    qualityProfile: text('quality_profile'),
+    contentGeneration: text('content_generation'),
+    verificationStrength: text('verification_strength'),
+    status: text('status').notNull(),
+    verifiedAt: integer('verified_at'),
+    metadataUpdatedAt: integer('metadata_updated_at').notNull(),
+    providerMetadataJson: text('provider_metadata_json').notNull().default('{}'),
+    ...timestamps(),
+  },
+  (table) => [
+    index('recovery_copies_identity_idx').on(
+      table.sessionId,
+      table.sourceProvider,
+      table.providerMediaId,
+    ),
+    index('recovery_copies_destination_idx').on(
+      table.sessionId,
+      table.destinationType,
+      table.sourceId,
+      table.providerRootId,
+    ),
+  ],
+);
+
+export const recoveryArtifacts = sqliteTable(
+  'recovery_artifacts',
+  {
+    id: text('id').primaryKey(),
+    sessionId: text('session_id')
+      .notNull()
+      .references(() => recoverySessions.id, { onDelete: 'cascade' }),
+    sourceId: text('source_id')
+      .notNull()
+      .references(() => recoverySources.id, { onDelete: 'cascade' }),
+    providerRootId: text('provider_root_id'),
+    providerMediaId: text('provider_media_id').notNull(),
+    artifactType: text('artifact_type').notNull(),
+    relativePath: text('relative_path'),
+    providerFileId: text('provider_file_id'),
+    bytes: integer('bytes'),
+    sha256: text('sha256'),
+    status: text('status').notNull(),
+    metadataUpdatedAt: integer('metadata_updated_at').notNull(),
+    ...timestamps(),
+  },
+  (table) => [index('recovery_artifacts_media_idx').on(table.sessionId, table.providerMediaId)],
+);
+
+export const recoveryWarnings = sqliteTable(
+  'recovery_warnings',
+  {
+    id: text('id').primaryKey(),
+    sessionId: text('session_id')
+      .notNull()
+      .references(() => recoverySessions.id, { onDelete: 'cascade' }),
+    sourceId: text('source_id').references(() => recoverySources.id, { onDelete: 'cascade' }),
+    code: text('code').notNull(),
+    entityKey: text('entity_key'),
+    messageSafe: text('message_safe').notNull(),
+    detailsJson: text('details_json').notNull().default('{}'),
+    createdAt: integer('created_at').notNull(),
+  },
+  (table) => [
+    index('recovery_warnings_session_code_idx').on(table.sessionId, table.code, table.createdAt),
+  ],
+);
+
+export const recoveryDriveObjects = sqliteTable(
+  'recovery_drive_objects',
+  {
+    id: text('id').primaryKey(),
+    sessionId: text('session_id')
+      .notNull()
+      .references(() => recoverySessions.id, { onDelete: 'cascade' }),
+    sourceId: text('source_id')
+      .notNull()
+      .references(() => recoverySources.id, { onDelete: 'cascade' }),
+    providerObjectId: text('provider_object_id').notNull(),
+    parentProviderObjectId: text('parent_provider_object_id'),
+    currentName: text('current_name').notNull(),
+    mimeType: text('mime_type').notNull(),
+    bytes: integer('bytes'),
+    modifiedAt: integer('modified_at'),
+    logicalKey: text('logical_key'),
+    objectType: text('object_type'),
+    appPropertiesJson: text('app_properties_json').notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('recovery_drive_objects_session_source_provider_uidx').on(
+      table.sessionId,
+      table.sourceId,
+      table.providerObjectId,
+    ),
+    index('recovery_drive_objects_parent_idx').on(
+      table.sessionId,
+      table.sourceId,
+      table.parentProviderObjectId,
+    ),
+    index('recovery_drive_objects_logical_key_idx').on(
+      table.sessionId,
+      table.sourceId,
+      table.logicalKey,
+    ),
+  ],
+);
+
 export const integrityChecks = sqliteTable(
   'integrity_checks',
   {

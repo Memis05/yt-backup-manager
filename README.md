@@ -4,7 +4,8 @@ A local-first Windows desktop application for durable, incremental backups of
 YouTube channels owned or managed by the signed-in user.
 
 This repository contains the Phase 1 foundation, Phase 2 read-only source catalog,
-and Phase 3 durable local backup acquisition:
+Phase 3 durable local backup acquisition, Phase 4 Google Drive backup, and Phase 5
+disaster recovery:
 
 - an Electron, React, Vite, and Tailwind desktop shell;
 - a separate headless worker with user-scoped singleton protection;
@@ -24,6 +25,10 @@ and Phase 3 durable local backup acquisition:
 - a leased, dependency-aware, resumable SQLite job engine;
 - staging, streaming SHA-256 verification, safe local copies, and atomic recovery manifests;
 - Storage, Backup, Queue, history, progress, and media-copy detail views.
+- app-owned Google Drive roots, resumable transfer, provider-object reconciliation,
+  and independent Drive authorization;
+- durable local/Drive recovery sessions with scan, preview, bounded idempotent
+  import, stable-ID merge, and FTS reconstruction.
 
 ## Requirements
 
@@ -79,10 +84,12 @@ ephemeral port on `127.0.0.1`; no redirect URI port is hard-coded.
 See `docs/PHASE-2-SOURCE-CATALOG.md` for source synchronization and
 classification details. See `docs/PHASE-3-LOCAL-BACKUP.md` for the local backup
 architecture, recovery rules, and manual real-media smoke procedure.
+See `docs/PHASE-4-GOOGLE-DRIVE.md` for Drive transfer behavior and
+`docs/PHASE-5-IMPLEMENTATION.md` for disaster-recovery operation and validation.
 
 Runtime data defaults to the current Windows user's application-data folders.
 Development and tests can override paths with the variables documented in
 `.env.example`.
 
-Google Drive transfer, scheduled backup registration, managed-tool auto-update,
-and full disaster-recovery import remain intentionally deferred to later phases.
+Scheduled backup registration and managed-tool auto-update remain intentionally
+deferred to later phases.

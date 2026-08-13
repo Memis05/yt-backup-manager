@@ -75,6 +75,24 @@ export interface GoogleDriveObjectStat {
   modifiedTime: string | null;
 }
 
+export interface GoogleDriveRecoveryObjectPage {
+  objects: GoogleDriveObjectStat[];
+  nextPageToken: string | null;
+}
+
+export interface ListGoogleDriveRecoveryObjectsInput {
+  destination: StoredGoogleDriveDestination;
+  pageToken: string | null;
+  signal?: AbortSignal;
+}
+
+export interface GetGoogleDriveTextContentInput {
+  destination: StoredGoogleDriveDestination;
+  providerFileId: string;
+  maximumBytes: number;
+  signal?: AbortSignal;
+}
+
 export interface EnsureGoogleDriveFolderInput {
   destination: StoredGoogleDriveDestination;
   knownProviderId: string | null;
@@ -165,6 +183,10 @@ export interface GoogleDriveStorageProvider {
   putContent(input: PutGoogleDriveContentInput): Promise<GoogleDriveObjectStat>;
   getFile(input: GetGoogleDriveFileInput): Promise<GetGoogleDriveFileResult>;
   stat(input: GoogleDriveObjectRef): Promise<GoogleDriveObjectStat | null>;
+  listRecoveryObjects(
+    input: ListGoogleDriveRecoveryObjectsInput,
+  ): Promise<GoogleDriveRecoveryObjectPage>;
+  getTextContent(input: GetGoogleDriveTextContentInput): Promise<string>;
 }
 
 export interface VolumeIdentityProvider {

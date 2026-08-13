@@ -76,10 +76,7 @@ class MemoryAccounts implements GoogleAccountPersistence {
 
   public async upsertConnectedAccount(input: ConnectedGoogleAccountInput): Promise<AccountDto> {
     const existing = await this.findByProviderAccountId(input.providerAccountId);
-    const id = existing?.id ?? randomUUID();
-    if (input.capability === 'GOOGLE_DRIVE' && existing === null) {
-      throw new Error('Drive authorization requires an existing Google account');
-    }
+    const id = existing?.id ?? input.accountId ?? randomUUID();
     const previous = this.records.get(id);
     const account: AccountDto & { credentialRef: string; driveCredentialRef: string | null } = {
       id,
@@ -88,9 +85,13 @@ class MemoryAccounts implements GoogleAccountPersistence {
       email: input.email,
       displayName: input.displayName,
       avatarUrl: input.avatarUrl,
-      connectionState: 'CONNECTED',
+      connectionState:
+        input.capability === 'YOUTUBE'
+          ? 'CONNECTED'
+          : (previous?.connectionState ?? 'DISCONNECTED'),
       capabilities: {
-        youtubeReadonly: true,
+        youtubeReadonly:
+          input.capability === 'YOUTUBE' || previous?.capabilities.youtubeReadonly === true,
         driveFile: input.capability === 'GOOGLE_DRIVE' || previous?.capabilities.driveFile === true,
         driveConnectionState:
           input.capability === 'GOOGLE_DRIVE'
@@ -101,7 +102,9 @@ class MemoryAccounts implements GoogleAccountPersistence {
         ],
       },
       credentialRef:
-        input.capability === 'YOUTUBE' ? input.credentialRef : (previous?.credentialRef ?? ''),
+        input.capability === 'YOUTUBE'
+          ? input.credentialRef
+          : (previous?.credentialRef ?? `google-oauth:${id}`),
       driveCredentialRef:
         input.capability === 'GOOGLE_DRIVE'
           ? input.credentialRef
@@ -261,6 +264,64 @@ describe('Google installed-application OAuth', () => {
     });
     await expect(store.get('google-oauth:youtube-existing')).resolves.toBe(
       'existing-youtube-credential',
+    );
+  });
+
+  it('authorizes Drive after database loss without requiring a YouTube grant', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ytbm-oauth-drive-recovery-test-'));
+    directories.push(directory);
+    const store = new EncryptedFileCredentialStore(directory, encryption);
+    const accounts = new MemoryAccounts();
+    const service = new GoogleAccountService(
+      {
+        clientId: 'desktop-client.apps.googleusercontent.com',
+        clientSecret: 'desktop-client-secret',
+      },
+      accounts,
+      store,
+      async (input) => {
+        const url = new URL(input.toString());
+        if (url.pathname === '/token') {
+          return Response.json({
+            access_token: 'recovery-drive-access-secret',
+            refresh_token: 'recovery-drive-refresh-secret',
+            expires_in: 3_600,
+            token_type: 'Bearer',
+            scope: GOOGLE_DRIVE_OAUTH_SCOPES.join(' '),
+          });
+        }
+        return Response.json({
+          sub: 'drive-only-recovery-subject',
+          email: 'drive-only@example.test',
+          name: 'Drive Only',
+        });
+      },
+    );
+    services.push(service);
+
+    const started = await service.beginConnection(null, 'GOOGLE_DRIVE');
+    if (started.status !== 'STARTED') throw new Error('Drive recovery OAuth did not start');
+    const authorization = new URL(started.authorizationUrl);
+    expect(authorization.searchParams.get('scope')).toContain(GOOGLE_DRIVE_FILE_SCOPE);
+    expect(authorization.searchParams.get('scope')).not.toContain(YOUTUBE_READONLY_SCOPE);
+    await expect(
+      callback(started, authorization.searchParams.get('state')!),
+    ).resolves.toMatchObject({ status: 200 });
+
+    expect(service.getFlowStatus(started.flowId)).toMatchObject({
+      status: 'COMPLETED',
+      account: {
+        connectionState: 'DISCONNECTED',
+        capabilities: {
+          youtubeReadonly: false,
+          driveFile: true,
+          driveConnectionState: 'CONNECTED',
+        },
+      },
+    });
+    const account = (await accounts.listAccounts())[0]!;
+    await expect(service.getAccessToken(account.id, false, 'GOOGLE_DRIVE')).resolves.toBe(
+      'recovery-drive-access-secret',
     );
   });
 

@@ -197,6 +197,44 @@ export function registerDesktopIpcHandlers(
     worker.request('dashboard.summary', {}),
   );
   handle(DESKTOP_IPC_CHANNELS.toolDiagnostics, async () => worker.request('tools.diagnostics', {}));
+  handle(DESKTOP_IPC_CHANNELS.recoveryCreate, async () => worker.request('recovery.create', {}));
+  handle(DESKTOP_IPC_CHANNELS.recoveryLatest, async () => worker.request('recovery.latest', {}));
+  handle(DESKTOP_IPC_CHANNELS.recoveryGet, async (input) =>
+    worker.request('recovery.get', input as { sessionId: string }),
+  );
+  handle(DESKTOP_IPC_CHANNELS.chooseRecoveryLocalSource, async (input) => {
+    const { sessionId } = input as { sessionId: string };
+    const rootPath = await chooseFilesystemDestination();
+    return rootPath === null
+      ? ({ status: 'CANCELLED' } as const)
+      : ({
+          status: 'ADDED',
+          session: await worker.request('recovery.addLocalSource', { sessionId, rootPath }),
+        } as const);
+  });
+  handle(DESKTOP_IPC_CHANNELS.addRecoveryDriveSource, async (input) =>
+    worker.request('recovery.addDriveSource', input as { sessionId: string; accountId: string }),
+  );
+  handle(DESKTOP_IPC_CHANNELS.setRecoveryDriveRootSelected, async (input) =>
+    worker.request(
+      'recovery.setDriveRootSelected',
+      input as {
+        sessionId: string;
+        sourceId: string;
+        providerRootId: string;
+        selected: boolean;
+      },
+    ),
+  );
+  handle(DESKTOP_IPC_CHANNELS.startRecoveryScan, async (input) =>
+    worker.request('recovery.scan', input as { sessionId: string }),
+  );
+  handle(DESKTOP_IPC_CHANNELS.startRecoveryImport, async (input) =>
+    worker.request('recovery.import', input as { sessionId: string }),
+  );
+  handle(DESKTOP_IPC_CHANNELS.cancelRecovery, async (input) =>
+    worker.request('recovery.cancel', input as { sessionId: string }),
+  );
 
   return () => {
     for (const channel of Object.values(DESKTOP_IPC_CHANNELS)) ipcMain.removeHandler(channel);

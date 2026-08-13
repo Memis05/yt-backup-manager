@@ -381,6 +381,61 @@ describe('Google Drive storage provider', () => {
     ).resolves.toMatchObject({ bytes: source.bytes, sha256: source.sha256 });
     expect(await readFile(target)).toEqual(Buffer.alloc(source.bytes, 0x61));
   });
+
+  it('lists app-created recovery objects with pagination and bounds sidecar reads', async () => {
+    const requestedUrls: URL[] = [];
+    const provider = new GoogleDriveStorageProvider(
+      { getAccessToken: async () => 'token-recovery' },
+      {
+        apiRoot: 'https://fake.test/drive/v3',
+        fetch: (async (input, init) => {
+          expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer token-recovery');
+          const url = new URL(input.toString());
+          requestedUrls.push(url);
+          if (url.pathname.endsWith('/files')) {
+            return Response.json({
+              files: [
+                {
+                  id: 'root_recovery_123',
+                  name: 'Renamed root',
+                  mimeType: 'application/vnd.google-apps.folder',
+                  parents: [],
+                  appProperties: {
+                    ytbmSchemaVersion: '1',
+                    ytbmObjectKey: 'root',
+                    ytbmObjectType: 'backup-root',
+                  },
+                  modifiedTime: '2026-08-12T00:00:00.000Z',
+                },
+              ],
+              nextPageToken: 'next-page',
+            });
+          }
+          return new Response('0123456789', {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }) as typeof fetch,
+      },
+    );
+
+    await expect(
+      provider.listRecoveryObjects({ destination, pageToken: 'prior-page' }),
+    ).resolves.toMatchObject({
+      objects: [{ providerFileId: 'root_recovery_123', name: 'Renamed root' }],
+      nextPageToken: 'next-page',
+    });
+    expect(requestedUrls[0]?.searchParams.get('pageToken')).toBe('prior-page');
+    expect(requestedUrls[0]?.searchParams.get('q')).toContain("key='ytbmSchemaVersion'");
+    expect(requestedUrls[0]?.searchParams.get('fields')).toContain('files(id,name,mimeType');
+    await expect(
+      provider.getTextContent({
+        destination,
+        providerFileId: 'sidecar_123',
+        maximumBytes: 5,
+      }),
+    ).rejects.toMatchObject({ code: 'MANIFEST_INVALID' });
+  });
 });
 
 function dirnameOf(path: string): string {

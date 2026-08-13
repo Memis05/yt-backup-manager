@@ -348,7 +348,6 @@ export class LocalBackupRepository {
     const account = this.database.sqlite
       .prepare(
         `select id from accounts where id = ? and provider = 'GOOGLE'
-         and connection_state = 'CONNECTED'
          and json_extract(capabilities_json, '$.driveFile') = 1
          and json_extract(capabilities_json, '$.driveConnectionState') = 'CONNECTED'`,
       )

@@ -154,6 +154,15 @@ const handlers: WorkerRpcHandlers = {
   'storage.resolveGoogleDriveObject': unimplemented,
   'dashboard.summary': unimplemented,
   'tools.diagnostics': unimplemented,
+  'recovery.create': unimplemented,
+  'recovery.latest': unimplemented,
+  'recovery.get': unimplemented,
+  'recovery.addLocalSource': unimplemented,
+  'recovery.addDriveSource': unimplemented,
+  'recovery.setDriveRootSelected': unimplemented,
+  'recovery.scan': unimplemented,
+  'recovery.import': unimplemented,
+  'recovery.cancel': unimplemented,
 };
 
 describe('authenticated worker RPC transport', () => {

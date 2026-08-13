@@ -21,6 +21,7 @@
     "@ytbm/job-engine": "workspace:*",
     "@ytbm/manifest": "workspace:*",
     "@ytbm/media-ffmpeg": "workspace:*",
+    "@ytbm/recovery": "workspace:*",
     "@ytbm/security": "workspace:*",
     "@ytbm/shared": "workspace:*",
     "@ytbm/source-youtube": "workspace:*",

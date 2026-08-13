@@ -29,6 +29,7 @@ import {
   QueueJobDtoSchema,
   QueueQuerySchema,
   QueueSnapshotSchema,
+  RecoverySessionDtoSchema,
   SourceSyncJobDtoSchema,
   ToolDiagnosticsSchema,
   type AccountDto,
@@ -56,6 +57,7 @@ import {
   type QueueJobDto,
   type QueueQuery,
   type QueueSnapshot,
+  type RecoverySessionDto,
   type RunControlAction,
   type SourceSyncJobDto,
   type ToolDiagnostics,
@@ -107,6 +109,20 @@ export interface YouTubeBackupManagerApi {
   }): Promise<OpenGoogleDriveObjectResult>;
   getDashboardSummary(): Promise<DashboardSummary>;
   getToolDiagnostics(): Promise<ToolDiagnostics>;
+  createRecoverySession(): Promise<RecoverySessionDto>;
+  getLatestRecoverySession(): Promise<RecoverySessionDto | null>;
+  getRecoverySession(sessionId: string): Promise<RecoverySessionDto>;
+  addRecoveryLocalSource(sessionId: string): Promise<RecoverySessionDto | null>;
+  addRecoveryDriveSource(sessionId: string, accountId: string): Promise<RecoverySessionDto>;
+  setRecoveryDriveRootSelected(input: {
+    sessionId: string;
+    sourceId: string;
+    providerRootId: string;
+    selected: boolean;
+  }): Promise<RecoverySessionDto>;
+  startRecoveryScan(sessionId: string): Promise<RecoverySessionDto>;
+  startRecoveryImport(sessionId: string): Promise<RecoverySessionDto>;
+  cancelRecovery(sessionId: string): Promise<RecoverySessionDto>;
 }
 
 const api: YouTubeBackupManagerApi = Object.freeze({
@@ -293,6 +309,61 @@ const api: YouTubeBackupManagerApi = Object.freeze({
   async getToolDiagnostics(): Promise<ToolDiagnostics> {
     const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.toolDiagnostics, {});
     return ToolDiagnosticsSchema.parse(response);
+  },
+  async createRecoverySession(): Promise<RecoverySessionDto> {
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.recoveryCreate, {});
+    return RecoverySessionDtoSchema.parse(response);
+  },
+  async getLatestRecoverySession(): Promise<RecoverySessionDto | null> {
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.recoveryLatest, {});
+    return RecoverySessionDtoSchema.nullable().parse(response);
+  },
+  async getRecoverySession(sessionId: string): Promise<RecoverySessionDto> {
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.recoveryGet, { sessionId });
+    return RecoverySessionDtoSchema.parse(response);
+  },
+  async addRecoveryLocalSource(sessionId: string): Promise<RecoverySessionDto | null> {
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.chooseRecoveryLocalSource, {
+      sessionId,
+    });
+    if (response?.status === 'CANCELLED') return null;
+    if (response?.status === 'ADDED') return RecoverySessionDtoSchema.parse(response.session);
+    throw new Error('The recovery source picker returned an invalid result.');
+  },
+  async addRecoveryDriveSource(sessionId: string, accountId: string): Promise<RecoverySessionDto> {
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.addRecoveryDriveSource, {
+      sessionId,
+      accountId,
+    });
+    return RecoverySessionDtoSchema.parse(response);
+  },
+  async setRecoveryDriveRootSelected(input: {
+    sessionId: string;
+    sourceId: string;
+    providerRootId: string;
+    selected: boolean;
+  }): Promise<RecoverySessionDto> {
+    const response = await ipcRenderer.invoke(
+      DESKTOP_IPC_CHANNELS.setRecoveryDriveRootSelected,
+      input,
+    );
+    return RecoverySessionDtoSchema.parse(response);
+  },
+  async startRecoveryScan(sessionId: string): Promise<RecoverySessionDto> {
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.startRecoveryScan, {
+      sessionId,
+    });
+    return RecoverySessionDtoSchema.parse(response);
+  },
+  async startRecoveryImport(sessionId: string): Promise<RecoverySessionDto> {
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.startRecoveryImport, {
+      sessionId,
+    });
+    return RecoverySessionDtoSchema.parse(response);
+  },
+  async cancelRecovery(sessionId: string): Promise<RecoverySessionDto> {
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.cancelRecovery, { sessionId });
+    return RecoverySessionDtoSchema.parse(response);
   },
 });
 

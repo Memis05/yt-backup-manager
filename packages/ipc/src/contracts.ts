@@ -33,6 +33,7 @@ import {
   QueueSnapshotSchema,
   ResolveVerifiedCopyFolderResultSchema,
   ResolveGoogleDriveObjectResultSchema,
+  RecoverySessionDtoSchema,
   OpenGoogleDriveObjectResultSchema,
   RunControlActionSchema,
   SettingsPatchSchema,
@@ -207,6 +208,51 @@ export const WorkerRpcContracts = {
     params: EmptyParamsSchema,
     result: ToolDiagnosticsSchema,
   },
+  'recovery.create': {
+    params: EmptyParamsSchema,
+    result: RecoverySessionDtoSchema,
+  },
+  'recovery.latest': {
+    params: EmptyParamsSchema,
+    result: RecoverySessionDtoSchema.nullable(),
+  },
+  'recovery.get': {
+    params: z.object({ sessionId: z.string().uuid() }).strict(),
+    result: RecoverySessionDtoSchema,
+  },
+  'recovery.addLocalSource': {
+    params: z
+      .object({ sessionId: z.string().uuid(), rootPath: z.string().trim().min(1).max(1_024) })
+      .strict(),
+    result: RecoverySessionDtoSchema,
+  },
+  'recovery.addDriveSource': {
+    params: z.object({ sessionId: z.string().uuid(), accountId: z.string().uuid() }).strict(),
+    result: RecoverySessionDtoSchema,
+  },
+  'recovery.setDriveRootSelected': {
+    params: z
+      .object({
+        sessionId: z.string().uuid(),
+        sourceId: z.string().uuid(),
+        providerRootId: z.string().min(3).max(500),
+        selected: z.boolean(),
+      })
+      .strict(),
+    result: RecoverySessionDtoSchema,
+  },
+  'recovery.scan': {
+    params: z.object({ sessionId: z.string().uuid() }).strict(),
+    result: RecoverySessionDtoSchema,
+  },
+  'recovery.import': {
+    params: z.object({ sessionId: z.string().uuid() }).strict(),
+    result: RecoverySessionDtoSchema,
+  },
+  'recovery.cancel': {
+    params: z.object({ sessionId: z.string().uuid() }).strict(),
+    result: RecoverySessionDtoSchema,
+  },
 } as const;
 
 export type WorkerRpcMethod = keyof typeof WorkerRpcContracts;
@@ -342,6 +388,15 @@ export const DESKTOP_IPC_CHANNELS = {
   openGoogleDriveObject: 'ytbm:storage-open-google-drive-object',
   dashboardSummary: 'ytbm:dashboard-summary',
   toolDiagnostics: 'ytbm:tools-diagnostics',
+  recoveryCreate: 'ytbm:recovery-create',
+  recoveryLatest: 'ytbm:recovery-latest',
+  recoveryGet: 'ytbm:recovery-get',
+  chooseRecoveryLocalSource: 'ytbm:recovery-choose-local-source',
+  addRecoveryDriveSource: 'ytbm:recovery-add-drive-source',
+  setRecoveryDriveRootSelected: 'ytbm:recovery-set-drive-root-selected',
+  startRecoveryScan: 'ytbm:recovery-scan',
+  startRecoveryImport: 'ytbm:recovery-import',
+  cancelRecovery: 'ytbm:recovery-cancel',
 } as const;
 
 export type DesktopIpcChannel = (typeof DESKTOP_IPC_CHANNELS)[keyof typeof DESKTOP_IPC_CHANNELS];
@@ -486,6 +541,52 @@ const DesktopIpcContracts = {
   [DESKTOP_IPC_CHANNELS.toolDiagnostics]: {
     input: EmptyParamsSchema,
     output: ToolDiagnosticsSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.recoveryCreate]: {
+    input: EmptyParamsSchema,
+    output: RecoverySessionDtoSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.recoveryLatest]: {
+    input: EmptyParamsSchema,
+    output: RecoverySessionDtoSchema.nullable(),
+  },
+  [DESKTOP_IPC_CHANNELS.recoveryGet]: {
+    input: z.object({ sessionId: z.string().uuid() }).strict(),
+    output: RecoverySessionDtoSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.chooseRecoveryLocalSource]: {
+    input: z.object({ sessionId: z.string().uuid() }).strict(),
+    output: z.discriminatedUnion('status', [
+      z.object({ status: z.literal('ADDED'), session: RecoverySessionDtoSchema }).strict(),
+      z.object({ status: z.literal('CANCELLED') }).strict(),
+    ]),
+  },
+  [DESKTOP_IPC_CHANNELS.addRecoveryDriveSource]: {
+    input: z.object({ sessionId: z.string().uuid(), accountId: z.string().uuid() }).strict(),
+    output: RecoverySessionDtoSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.setRecoveryDriveRootSelected]: {
+    input: z
+      .object({
+        sessionId: z.string().uuid(),
+        sourceId: z.string().uuid(),
+        providerRootId: z.string().min(3).max(500),
+        selected: z.boolean(),
+      })
+      .strict(),
+    output: RecoverySessionDtoSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.startRecoveryScan]: {
+    input: z.object({ sessionId: z.string().uuid() }).strict(),
+    output: RecoverySessionDtoSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.startRecoveryImport]: {
+    input: z.object({ sessionId: z.string().uuid() }).strict(),
+    output: RecoverySessionDtoSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.cancelRecovery]: {
+    input: z.object({ sessionId: z.string().uuid() }).strict(),
+    output: RecoverySessionDtoSchema,
   },
 } as const;
 

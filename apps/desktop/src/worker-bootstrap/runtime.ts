@@ -20,6 +20,7 @@ import {
 } from '@ytbm/database/worker';
 import { WorkerRpcServer, createUserScopedEndpoints, type WorkerRpcHandlers } from '@ytbm/ipc';
 import { NamedPipeWorkerSingleton, WorkerAlreadyRunningError } from '@ytbm/job-engine';
+import { RecoveryService } from '@ytbm/recovery';
 import {
   EncryptedFileCredentialStore,
   JsonLinesFileSink,
@@ -61,6 +62,7 @@ export class WorkerRuntime {
   private googleAccounts: GoogleAccountService | null = null;
   private sourceSync: SourceSyncCoordinator | null = null;
   private localBackup: LocalBackupRuntime | null = null;
+  private recovery: RecoveryService | null = null;
 
   public constructor(private readonly options: WorkerRuntimeOptions) {
     this.now = options.now ?? Date.now;
@@ -137,6 +139,12 @@ export class WorkerRuntime {
           );
         },
       );
+      const googleDriveStorage = new GoogleDriveStorageProvider({
+        getAccessToken: (accountId, forceRefresh) =>
+          this.googleAccounts!.getAccessToken(accountId, forceRefresh, 'GOOGLE_DRIVE'),
+        markDriveAuthorizationInvalid: (accountId) =>
+          this.googleAccounts!.markDriveAuthorizationInvalid(accountId),
+      });
       this.localBackup = new LocalBackupRuntime({
         workerId: this.instanceId,
         database: this.database,
@@ -146,12 +154,12 @@ export class WorkerRuntime {
         logger: this.logger,
         settings: () => settings.get(),
         now: this.now,
-        googleDriveStorage: new GoogleDriveStorageProvider({
-          getAccessToken: (accountId, forceRefresh) =>
-            this.googleAccounts!.getAccessToken(accountId, forceRefresh, 'GOOGLE_DRIVE'),
-          markDriveAuthorizationInvalid: (accountId) =>
-            this.googleAccounts!.markDriveAuthorizationInvalid(accountId),
-        }),
+        googleDriveStorage,
+      });
+      this.recovery = new RecoveryService({
+        database: this.database,
+        googleDriveStorage,
+        now: this.now,
       });
 
       const endpoints = createUserScopedEndpoints(this.options.config.paths.runtime);
@@ -169,6 +177,7 @@ export class WorkerRuntime {
             this.options.onShutdownRequested === undefined ||
             this.sourceSync?.isIdle() === false ||
             this.googleAccounts?.isIdle() === false ||
+            this.recovery?.isIdle() === false ||
             this.localBackup?.requestShutdownIfIdle() !== true
           ) {
             return { accepted: false };
@@ -232,6 +241,18 @@ export class WorkerRuntime {
           this.localBackup!.resolveGoogleDriveObject(mediaCopyId, destinationId),
         'dashboard.summary': () => this.localBackup!.dashboardSummary(),
         'tools.diagnostics': () => this.localBackup!.diagnostics(),
+        'recovery.create': () => this.recovery!.createSession(),
+        'recovery.latest': () => this.recovery!.latestSession(),
+        'recovery.get': ({ sessionId }) => this.recovery!.getSession(sessionId),
+        'recovery.addLocalSource': ({ sessionId, rootPath }) =>
+          this.recovery!.addLocalSource(sessionId, rootPath),
+        'recovery.addDriveSource': ({ sessionId, accountId }) =>
+          this.recovery!.addDriveSource(sessionId, accountId),
+        'recovery.setDriveRootSelected': ({ sessionId, sourceId, providerRootId, selected }) =>
+          this.recovery!.setDriveRootSelected(sessionId, sourceId, providerRootId, selected),
+        'recovery.scan': ({ sessionId }) => this.recovery!.startScan(sessionId),
+        'recovery.import': ({ sessionId }) => this.recovery!.startImport(sessionId),
+        'recovery.cancel': ({ sessionId }) => this.recovery!.cancel(sessionId),
       };
       this.rpcServer = new WorkerRpcServer(endpoints.rpc, authToken, handlers);
       await this.rpcServer.start();
@@ -252,10 +273,12 @@ export class WorkerRuntime {
     this.rpcServer = null;
     await this.sourceSync?.stop();
     this.sourceSync = null;
+    await this.recovery?.stop();
+    this.recovery = null;
     await this.googleAccounts?.stop();
-    this.googleAccounts = null;
     await this.localBackup?.stop();
     this.localBackup = null;
+    this.googleAccounts = null;
     this.database?.close();
     this.database = null;
     await this.singleton.release();
