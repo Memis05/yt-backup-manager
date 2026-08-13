@@ -40,6 +40,15 @@ import {
   SourceSyncJobDtoSchema,
   WorkerHealthSchema,
   ToolDiagnosticsSchema,
+  IntegrityOverviewSchema,
+  IntegrityStartRequestSchema,
+  IntegrityStartResultSchema,
+  NotificationListResultSchema,
+  RepairStartResultSchema,
+  ScheduleDtoSchema,
+  SchedulesListResultSchema,
+  ScheduleTriggerResultSchema,
+  ScheduleUpsertSchema,
 } from '@ytbm/core';
 import { z } from 'zod';
 
@@ -51,12 +60,24 @@ export const WorkerRpcContracts = {
     result: WorkerHealthSchema,
   },
   'worker.scheduledWake': {
-    params: z.object({ requestedAt: z.string().datetime() }).strict(),
-    result: z.object({ accepted: z.literal(true) }).strict(),
+    params: z
+      .object({ scheduleId: z.string().uuid(), requestedAt: z.string().datetime() })
+      .strict(),
+    result: ScheduleTriggerResultSchema,
+  },
+  'worker.scheduledIntegrityWake': {
+    params: z
+      .object({ scheduleId: z.string().uuid(), requestedAt: z.string().datetime() })
+      .strict(),
+    result: IntegrityStartResultSchema.nullable(),
   },
   'worker.shutdownIfIdle': {
     params: EmptyParamsSchema,
     result: z.object({ accepted: z.boolean() }).strict(),
+  },
+  'worker.shutdownWhenIdle': {
+    params: EmptyParamsSchema,
+    result: z.object({ accepted: z.literal(true) }).strict(),
   },
   'app.info': {
     params: EmptyParamsSchema,
@@ -73,6 +94,22 @@ export const WorkerRpcContracts = {
   'settings.update': {
     params: SettingsPatchSchema,
     result: AppSettingsSchema,
+  },
+  'schedules.list': {
+    params: EmptyParamsSchema,
+    result: SchedulesListResultSchema,
+  },
+  'schedules.upsert': {
+    params: ScheduleUpsertSchema,
+    result: ScheduleDtoSchema,
+  },
+  'schedules.remove': {
+    params: z.object({ scheduleId: z.string().uuid() }).strict(),
+    result: z.object({ removed: z.literal(true) }).strict(),
+  },
+  'schedules.triggerStartup': {
+    params: z.object({ requestedAt: z.string().datetime() }).strict(),
+    result: z.object({ results: z.array(ScheduleTriggerResultSchema) }).strict(),
   },
   'accounts.oauthBegin': {
     params: z
@@ -203,6 +240,26 @@ export const WorkerRpcContracts = {
   'dashboard.summary': {
     params: EmptyParamsSchema,
     result: DashboardSummarySchema,
+  },
+  'integrity.start': {
+    params: IntegrityStartRequestSchema,
+    result: IntegrityStartResultSchema,
+  },
+  'integrity.overview': {
+    params: EmptyParamsSchema,
+    result: IntegrityOverviewSchema,
+  },
+  'repair.start': {
+    params: z.object({ copyId: z.string().uuid(), allowYoutubeFallback: z.boolean() }).strict(),
+    result: RepairStartResultSchema,
+  },
+  'notifications.pending': {
+    params: EmptyParamsSchema,
+    result: NotificationListResultSchema,
+  },
+  'notifications.ack': {
+    params: z.object({ notificationIds: z.array(z.string().uuid()).max(20) }).strict(),
+    result: z.object({ acknowledged: z.number().int().nonnegative() }).strict(),
   },
   'tools.diagnostics': {
     params: EmptyParamsSchema,
@@ -397,6 +454,12 @@ export const DESKTOP_IPC_CHANNELS = {
   startRecoveryScan: 'ytbm:recovery-scan',
   startRecoveryImport: 'ytbm:recovery-import',
   cancelRecovery: 'ytbm:recovery-cancel',
+  schedulesList: 'ytbm:schedules-list',
+  upsertSchedule: 'ytbm:schedules-upsert',
+  removeSchedule: 'ytbm:schedules-remove',
+  integrityStart: 'ytbm:integrity-start',
+  integrityOverview: 'ytbm:integrity-overview',
+  repairStart: 'ytbm:repair-start',
 } as const;
 
 export type DesktopIpcChannel = (typeof DESKTOP_IPC_CHANNELS)[keyof typeof DESKTOP_IPC_CHANNELS];
@@ -409,6 +472,30 @@ const DesktopIpcContracts = {
   [DESKTOP_IPC_CHANNELS.updateSettings]: {
     input: RendererSettingsPatchSchema,
     output: AppSettingsSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.schedulesList]: {
+    input: EmptyParamsSchema,
+    output: SchedulesListResultSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.upsertSchedule]: {
+    input: ScheduleUpsertSchema,
+    output: ScheduleDtoSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.removeSchedule]: {
+    input: z.object({ scheduleId: z.string().uuid() }).strict(),
+    output: z.object({ removed: z.literal(true) }).strict(),
+  },
+  [DESKTOP_IPC_CHANNELS.integrityStart]: {
+    input: IntegrityStartRequestSchema,
+    output: IntegrityStartResultSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.integrityOverview]: {
+    input: EmptyParamsSchema,
+    output: IntegrityOverviewSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.repairStart]: {
+    input: z.object({ copyId: z.string().uuid(), allowYoutubeFallback: z.boolean() }).strict(),
+    output: RepairStartResultSchema,
   },
   [DESKTOP_IPC_CHANNELS.openLogFolder]: {
     input: EmptyParamsSchema,

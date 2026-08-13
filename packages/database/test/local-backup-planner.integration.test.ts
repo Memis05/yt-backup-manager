@@ -120,6 +120,9 @@ function markDriveVerified(
         verification_strength = 'PROVIDER_METADATA_SIZE' where id = ?`,
     )
     .run(`drive-file-${copyId}`, copyId);
+  database.sqlite
+    .prepare("update destinations set availability_status = 'AVAILABLE' where id = ?")
+    .run(destinationId);
   return copyId;
 }
 
@@ -237,11 +240,12 @@ describe('local backup planner', () => {
     ).toEqual({ count: 1 });
   });
 
-  it('creates an independent durable acquisition DAG for each backup run', async () => {
+  it('deduplicates a second backup request while the first run is active', async () => {
     const { database, repository, channelId, directory } = await fixture();
 
-    repository.planBackup(channelId, 'MAX_1080P', join(directory, 'staging'));
-    repository.planBackup(channelId, 'MAX_1080P', join(directory, 'staging'));
+    const first = repository.planBackup(channelId, 'MAX_1080P', join(directory, 'staging'));
+    const duplicate = repository.planBackup(channelId, 'MAX_1080P', join(directory, 'staging'));
+    expect(duplicate.run.id).toBe(first.run.id);
 
     const counts = database.sqlite
       .prepare(
@@ -250,16 +254,16 @@ describe('local backup planner', () => {
       )
       .all() as Array<{ job_type: string; count: number }>;
     expect(Object.fromEntries(counts.map((row) => [row.job_type, row.count]))).toMatchObject({
-      FORMAT_PROBE: 2,
-      DOWNLOAD_MEDIA: 2,
-      POST_PROCESS_MEDIA: 2,
-      HASH_STAGING_MEDIA: 2,
-      VERIFY_STAGING_MEDIA: 2,
-      COPY_TO_FILESYSTEM: 2,
-      VERIFY_FILESYSTEM_COPY: 2,
-      WRITE_DESTINATION_METADATA: 2,
-      UPDATE_MANIFEST: 2,
-      CLEANUP_STAGING: 2,
+      FORMAT_PROBE: 1,
+      DOWNLOAD_MEDIA: 1,
+      POST_PROCESS_MEDIA: 1,
+      HASH_STAGING_MEDIA: 1,
+      VERIFY_STAGING_MEDIA: 1,
+      COPY_TO_FILESYSTEM: 1,
+      VERIFY_FILESYSTEM_COPY: 1,
+      WRITE_DESTINATION_METADATA: 1,
+      UPDATE_MANIFEST: 1,
+      CLEANUP_STAGING: 1,
     });
   });
 
@@ -345,7 +349,7 @@ describe('local backup planner', () => {
 
   it('creates a new idempotent repair generation for a missing verified copy', async () => {
     const { database, repository, channelId, mediaId, destinationA, directory } = await fixture();
-    repository.planBackup(channelId, 'MAX_1080P', join(directory, 'staging'));
+    const initial = repository.planBackup(channelId, 'MAX_1080P', join(directory, 'staging'));
     const copyId = markVerified(database, mediaId, destinationA.id);
     database.sqlite
       .prepare(
@@ -353,6 +357,9 @@ describe('local backup planner', () => {
           last_error_code = 'COPY_MISSING', updated_at = 200 where id = ?`,
       )
       .run(copyId);
+    database.sqlite
+      .prepare("update backup_runs set status = 'COMPLETED', completed_at = 200 where id = ?")
+      .run(initial.run.id);
 
     const repair = repository.planBackup(channelId, 'MAX_1080P', join(directory, 'staging'));
 

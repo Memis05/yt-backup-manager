@@ -32,6 +32,14 @@ import {
   RecoverySessionDtoSchema,
   SourceSyncJobDtoSchema,
   ToolDiagnosticsSchema,
+  IntegrityOverviewSchema,
+  IntegrityStartRequestSchema,
+  IntegrityStartResultSchema,
+  InternalRouteSchema,
+  ScheduleDtoSchema,
+  ScheduleUpsertSchema,
+  SchedulesListResultSchema,
+  RepairStartResultSchema,
   type AccountDto,
   type AppSettings,
   type BackupRunDto,
@@ -61,7 +69,15 @@ import {
   type RunControlAction,
   type SourceSyncJobDto,
   type ToolDiagnostics,
+  type IntegrityOverview,
+  type IntegrityStartRequest,
+  type IntegrityStartResult,
+  type ScheduleDto,
+  type ScheduleUpsert,
+  type RepairStartResult,
+  type InternalRoute,
   type GoogleOAuthCapability,
+  type RendererSettingsPatch,
 } from '@ytbm/core';
 import { DESKTOP_IPC_CHANNELS } from '@ytbm/ipc/renderer';
 
@@ -71,6 +87,14 @@ export interface YouTubeBackupManagerApi {
   updateDefaultQuality(
     defaultQualityProfile: AppSettings['defaultQualityProfile'],
   ): Promise<AppSettings>;
+  updateSettings(patch: RendererSettingsPatch): Promise<AppSettings>;
+  listSchedules(): Promise<ScheduleDto[]>;
+  upsertSchedule(input: ScheduleUpsert): Promise<ScheduleDto>;
+  removeSchedule(scheduleId: string): Promise<void>;
+  startIntegrity(input: IntegrityStartRequest): Promise<IntegrityStartResult>;
+  getIntegrityOverview(): Promise<IntegrityOverview>;
+  startRepair(copyId: string, allowYoutubeFallback?: boolean): Promise<RepairStartResult>;
+  onInternalRoute(listener: (route: InternalRoute) => void): () => void;
   openLogFolder(): Promise<void>;
   listAccounts(): Promise<AccountDto[]>;
   beginGoogleOAuth(
@@ -126,6 +150,18 @@ export interface YouTubeBackupManagerApi {
 }
 
 const api: YouTubeBackupManagerApi = Object.freeze({
+  onInternalRoute(listener: (route: InternalRoute) => void): () => void {
+    const handler = (_event: unknown, value: unknown): void => {
+      listener(InternalRouteSchema.parse(value));
+    };
+    ipcRenderer.on('ytbm:internal-route', handler);
+    return () => ipcRenderer.removeListener('ytbm:internal-route', handler);
+  },
+  async updateSettings(patch: RendererSettingsPatch): Promise<AppSettings> {
+    const input = RendererSettingsPatchSchema.parse(patch);
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.updateSettings, input);
+    return AppSettingsSchema.parse(response);
+  },
   async getFoundationStatus(): Promise<FoundationStatus> {
     const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.foundationStatus, {});
     return FoundationStatusSchema.parse(response);
@@ -141,6 +177,35 @@ const api: YouTubeBackupManagerApi = Object.freeze({
     const input = RendererSettingsPatchSchema.parse({ defaultQualityProfile });
     const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.updateSettings, input);
     return AppSettingsSchema.parse(response);
+  },
+  async listSchedules(): Promise<ScheduleDto[]> {
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.schedulesList, {});
+    return SchedulesListResultSchema.parse(response).schedules;
+  },
+  async upsertSchedule(inputValue: ScheduleUpsert): Promise<ScheduleDto> {
+    const input = ScheduleUpsertSchema.parse(inputValue);
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.upsertSchedule, input);
+    return ScheduleDtoSchema.parse(response);
+  },
+  async removeSchedule(scheduleId: string): Promise<void> {
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.removeSchedule, { scheduleId });
+    if (response?.removed !== true) throw new Error('The schedule was not removed.');
+  },
+  async startIntegrity(inputValue: IntegrityStartRequest): Promise<IntegrityStartResult> {
+    const input = IntegrityStartRequestSchema.parse(inputValue);
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.integrityStart, input);
+    return IntegrityStartResultSchema.parse(response);
+  },
+  async getIntegrityOverview(): Promise<IntegrityOverview> {
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.integrityOverview, {});
+    return IntegrityOverviewSchema.parse(response);
+  },
+  async startRepair(copyId: string, allowYoutubeFallback = false): Promise<RepairStartResult> {
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.repairStart, {
+      copyId,
+      allowYoutubeFallback,
+    });
+    return RepairStartResultSchema.parse(response);
   },
   async openLogFolder(): Promise<void> {
     const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.openLogFolder, {});

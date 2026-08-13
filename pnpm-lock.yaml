@@ -128,6 +128,9 @@ importers:
       '@ytbm/recovery':
         specifier: workspace:*
         version: link:../../packages/recovery
+      '@ytbm/scheduler-windows':
+        specifier: workspace:*
+        version: link:../../packages/scheduler-windows
       '@ytbm/security':
         specifier: workspace:*
         version: link:../../packages/security
@@ -285,6 +288,16 @@ importers:
       zod:
         specifier: 'catalog:'
         version: 4.4.3
+
+  packages/scheduler-windows:
+    dependencies:
+      '@ytbm/core':
+        specifier: workspace:*
+        version: link:../core
+    devDependencies:
+      '@ytbm/database':
+        specifier: workspace:*
+        version: link:../database
 
   packages/security: {}
 

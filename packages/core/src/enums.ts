@@ -70,6 +70,22 @@ export const VerificationResultSchema = z.enum([
   'UNAVAILABLE',
   'ERROR',
 ]);
+export const VerificationStrengthSchema = z.enum([
+  'LOCAL_SHA256',
+  'PROVIDER_METADATA_SIZE',
+  'DOWNLOADED_SHA256',
+]);
+export const ScheduleFrequencySchema = z.enum(['DAILY', 'WEEKLY', 'EVERY_N_HOURS']);
+export const ScheduleTaskStatusSchema = z.enum(['PENDING', 'SYNCED', 'ERROR', 'UNAVAILABLE']);
+export const BackupHealthSchema = z.enum([
+  'COMPLETE',
+  'PARTIAL',
+  'PENDING',
+  'MISSING',
+  'CORRUPT',
+  'UNAVAILABLE',
+  'AUTH_REQUIRED',
+]);
 export const QualityProfileSchema = z.enum(['BEST_AVAILABLE', 'MAX_4K', 'MAX_1080P', 'MAX_720P']);
 export const JobTypeSchema = z.enum([
   'CHANNEL_SYNC',
@@ -94,6 +110,7 @@ export const JobTypeSchema = z.enum([
   'UPDATE_GOOGLE_DRIVE_THUMBNAIL',
   'UPDATE_GOOGLE_DRIVE_MANIFEST',
   'CLEANUP_STAGING',
+  'VERIFY_EXISTING_COPY',
 ]);
 export const StagingStateSchema = z.enum([
   'PARTIAL',
@@ -222,6 +239,10 @@ export type BackupRunTrigger = z.infer<typeof BackupRunTriggerSchema>;
 export type BackupRunStatus = z.infer<typeof BackupRunStatusSchema>;
 export type JobStatus = z.infer<typeof JobStatusSchema>;
 export type VerificationResult = z.infer<typeof VerificationResultSchema>;
+export type VerificationStrength = z.infer<typeof VerificationStrengthSchema>;
+export type ScheduleFrequency = z.infer<typeof ScheduleFrequencySchema>;
+export type ScheduleTaskStatus = z.infer<typeof ScheduleTaskStatusSchema>;
+export type BackupHealth = z.infer<typeof BackupHealthSchema>;
 export type QualityProfile = z.infer<typeof QualityProfileSchema>;
 export type JobType = z.infer<typeof JobTypeSchema>;
 export type StagingState = z.infer<typeof StagingStateSchema>;

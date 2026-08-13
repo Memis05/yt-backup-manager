@@ -21,6 +21,10 @@ export default defineConfig({
       '@ytbm/manifest': resolve(import.meta.dirname, 'packages/manifest/src/index.ts'),
       '@ytbm/media-ffmpeg': resolve(import.meta.dirname, 'packages/media-ffmpeg/src/index.ts'),
       '@ytbm/recovery': resolve(import.meta.dirname, 'packages/recovery/src/index.ts'),
+      '@ytbm/scheduler-windows': resolve(
+        import.meta.dirname,
+        'packages/scheduler-windows/src/index.ts',
+      ),
       '@ytbm/security': resolve(import.meta.dirname, 'packages/security/src/index.ts'),
       '@ytbm/shared': resolve(import.meta.dirname, 'packages/shared/src/index.ts'),
       '@ytbm/source-youtube': resolve(import.meta.dirname, 'packages/source-youtube/src/index.ts'),

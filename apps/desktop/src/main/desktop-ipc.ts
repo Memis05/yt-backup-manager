@@ -1,6 +1,7 @@
 import type { IpcMain } from 'electron';
 
 import type {
+  AppSettings,
   CatalogQuery,
   ChannelBackupSettingsPatch,
   GoogleOAuthCapability,
@@ -8,7 +9,10 @@ import type {
   PlaylistMembersQuery,
   PlaylistQuery,
   QueueQuery,
+  IntegrityStartRequest,
   RunControlAction,
+  ScheduleUpsert,
+  SettingsPatch,
 } from '@ytbm/core';
 import {
   DESKTOP_IPC_CHANNELS,
@@ -39,6 +43,7 @@ export function registerDesktopIpcHandlers(
   openLogFolder: () => Promise<void>,
   openKnownFolder: (path: string) => Promise<void>,
   authorizeIpcEvent: AuthorizeIpcEvent,
+  onSettingsUpdated?: (settings: AppSettings) => void,
 ): () => void {
   const handle = (
     channel: DesktopIpcChannel,
@@ -61,8 +66,17 @@ export function registerDesktopIpcHandlers(
     return { worker: health, application, database, settings };
   });
 
-  handle(DESKTOP_IPC_CHANNELS.updateSettings, async (input) =>
-    worker.request('settings.update', input as { startMinimized: boolean }),
+  handle(DESKTOP_IPC_CHANNELS.updateSettings, async (input) => {
+    const settings = await worker.request('settings.update', input as SettingsPatch);
+    onSettingsUpdated?.(settings);
+    return settings;
+  });
+  handle(DESKTOP_IPC_CHANNELS.schedulesList, async () => worker.request('schedules.list', {}));
+  handle(DESKTOP_IPC_CHANNELS.upsertSchedule, async (input) =>
+    worker.request('schedules.upsert', input as ScheduleUpsert),
+  );
+  handle(DESKTOP_IPC_CHANNELS.removeSchedule, async (input) =>
+    worker.request('schedules.remove', input as { scheduleId: string }),
   );
 
   handle(DESKTOP_IPC_CHANNELS.openLogFolder, async () => {
@@ -195,6 +209,17 @@ export function registerDesktopIpcHandlers(
   });
   handle(DESKTOP_IPC_CHANNELS.dashboardSummary, async () =>
     worker.request('dashboard.summary', {}),
+  );
+  handle(DESKTOP_IPC_CHANNELS.integrityStart, async (input) =>
+    worker.request('integrity.start', input as IntegrityStartRequest),
+  );
+  handle(DESKTOP_IPC_CHANNELS.integrityOverview, async () =>
+    worker.request('integrity.overview', {}),
+  );
+  handle(DESKTOP_IPC_CHANNELS.repairStart, async (input) =>
+    worker.request('repair.start', input as { copyId: string; allowYoutubeFallback: boolean }, {
+      timeoutMs: BACKUP_START_RPC_TIMEOUT_MS,
+    }),
   );
   handle(DESKTOP_IPC_CHANNELS.toolDiagnostics, async () => worker.request('tools.diagnostics', {}));
   handle(DESKTOP_IPC_CHANNELS.recoveryCreate, async () => worker.request('recovery.create', {}));

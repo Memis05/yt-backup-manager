@@ -12,9 +12,13 @@ import {
   destinationAvailabilityError,
   type AppSettings,
   type BackupStartResult,
+  type BackupRunTrigger,
   type ChannelBackupSettingsDto,
   type DestinationDto,
   type DashboardSummary,
+  type IntegrityOverview,
+  type IntegrityScope,
+  type IntegrityStartResult,
   type JobType,
   type MediaBackupDetails,
   type ResolveVerifiedCopyFolderResult,
@@ -22,6 +26,8 @@ import {
   type QualityProfile,
   type QueueQuery,
   type QueueSnapshot,
+  type RepairStartResult,
+  type NativeNotificationDto,
   type ToolDiagnostics,
 } from '@ytbm/core';
 import {
@@ -106,6 +112,8 @@ const CopyJobPayloadSchema = z
     qualityProfile: z.enum(['BEST_AVAILABLE', 'MAX_4K', 'MAX_1080P', 'MAX_720P']),
     contentGeneration: z.string(),
     sourceCopyId: z.string().uuid().nullable(),
+    replaceUnhealthy: z.boolean().optional(),
+    repairOriginalStatus: z.string().optional(),
   })
   .passthrough();
 
@@ -375,6 +383,18 @@ export class LocalBackupRuntime {
     return true;
   }
 
+  public prepareShutdownWhenIdle(): void {}
+
+  public lastIntegrityStartedAt(): number | null {
+    const latest = this.options.database.sqlite
+      .prepare(
+        `select max(created_at) as created_at from backup_runs
+         where trigger_type = 'VERIFY' and status <> 'CANCELLED'`,
+      )
+      .get() as { created_at: number | null };
+    return latest.created_at;
+  }
+
   public async addDestination(rootPath: string): Promise<DestinationDto> {
     if (!isAbsolute(rootPath) || rootPath.includes('\u0000')) {
       throw new Error('A local destination must be an absolute filesystem path');
@@ -465,7 +485,13 @@ export class LocalBackupRuntime {
     );
   }
 
-  public async startBackup(channelId: string): Promise<BackupStartResult> {
+  public async startBackup(
+    channelId: string,
+    triggerType: Extract<
+      BackupRunTrigger,
+      'MANUAL' | 'CUSTOM_MANUAL' | 'SCHEDULED' | 'STARTUP'
+    > = 'MANUAL',
+  ): Promise<BackupStartResult> {
     const settings = await this.options.settings();
     await this.probeAllDestinations();
     await this.reconcileVerifiedCopyPresence({ channelId, exhaust: true });
@@ -473,6 +499,7 @@ export class LocalBackupRuntime {
       channelId,
       settings.defaultQualityProfile,
       this.options.stagingRoot,
+      triggerType,
     );
     this.engine.wake();
     return result;
@@ -529,6 +556,48 @@ export class LocalBackupRuntime {
 
   public dashboardSummary(): DashboardSummary {
     return this.repository.dashboardSummary();
+  }
+
+  public startIntegrity(
+    scope: IntegrityScope,
+    driveMode: 'PROVIDER_METADATA_SIZE' | 'DOWNLOADED_SHA256',
+  ): IntegrityStartResult {
+    const result = this.repository.planIntegrity(scope, driveMode);
+    this.engine.wake();
+    return result;
+  }
+
+  public integrityOverview(): IntegrityOverview {
+    this.repository.reconcileAllRuns();
+    return this.repository.integrityOverview();
+  }
+
+  public async startRepair(
+    copyId: string,
+    allowYoutubeFallback: boolean,
+  ): Promise<RepairStartResult> {
+    await this.probeAllDestinations();
+    await this.reconcileVerifiedCopyPresence({
+      mediaItemId: this.repository.getMediaCopy(copyId).mediaItemId,
+      exhaust: true,
+    });
+    const settings = await this.options.settings();
+    const result = this.repository.planRepair(
+      copyId,
+      allowYoutubeFallback,
+      settings.defaultQualityProfile,
+      this.options.stagingRoot,
+    );
+    this.engine.wake();
+    return result;
+  }
+
+  public async pendingNotifications(): Promise<NativeNotificationDto[]> {
+    return this.repository.pendingNotifications(await this.options.settings());
+  }
+
+  public acknowledgeNotifications(notificationIds: string[]): number {
+    return this.repository.ackNotifications(notificationIds);
   }
 
   public async reconciledMediaDetails(mediaItemId: string): Promise<MediaBackupDetails> {
@@ -680,7 +749,11 @@ export class LocalBackupRuntime {
       ['COPY_TO_FILESYSTEM', this.jobHandler('copy', (context) => this.copyToFilesystem(context))],
       [
         'VERIFY_FILESYSTEM_COPY',
-        this.jobHandler('hash', (context) => this.verifyFilesystemCopy(context)),
+        this.jobHandler(
+          'hash',
+          (context) => this.verifyFilesystemCopyWithRepairRollback(context),
+          (context) => this.restoreRepairTarget(context),
+        ),
       ],
       [
         'WRITE_DESTINATION_METADATA',
@@ -709,7 +782,11 @@ export class LocalBackupRuntime {
       ],
       [
         'VERIFY_GOOGLE_DRIVE_COPY',
-        this.jobHandler('driveControl', (context) => this.verifyGoogleDriveCopy(context)),
+        this.jobHandler(
+          'driveControl',
+          (context) => this.verifyGoogleDriveCopyWithRepairRollback(context),
+          (context) => this.restoreRepairTarget(context),
+        ),
       ],
       [
         'DOWNLOAD_FROM_GOOGLE_DRIVE',
@@ -736,6 +813,14 @@ export class LocalBackupRuntime {
         this.jobHandler('manifest', (context) => this.updateGoogleDriveManifest(context)),
       ],
       ['CLEANUP_STAGING', this.jobHandler('cleanup', (context) => this.cleanupStaging(context))],
+      [
+        'VERIFY_EXISTING_COPY',
+        this.jobHandler(
+          'hash',
+          (context) => this.verifyExistingCopy(context),
+          (context) => this.cleanupIntegrityVerification(context),
+        ),
+      ],
     ]);
   }
 
@@ -1041,28 +1126,57 @@ export class LocalBackupRuntime {
         qualityProfile: staging.qualityProfile,
       };
     }
-    const relativePath = join(
-      channelRelativeDirectory(media.channelTitle, media.providerChannelId),
-      mediaRelativeDirectory(media.mediaType, media.title, media.providerMediaId),
-      `video.${source.container}`,
-    );
+    const relativePath =
+      payload.replaceUnhealthy === true && targetCopy.relativePath !== null
+        ? targetCopy.relativePath
+        : join(
+            channelRelativeDirectory(media.channelTitle, media.providerChannelId),
+            mediaRelativeDirectory(media.mediaType, media.title, media.providerMediaId),
+            `video.${source.container}`,
+          );
     this.repository.markMediaCopyTransferring(targetCopy.id);
-    const copied = await this.storage.putFile({
-      destination: targetDestination,
-      sourcePath: source.path,
-      relativePath,
-      expectedSha256: source.sha256,
-      expectedBytes: source.bytes,
-      signal: context.signal,
-      onProgress: (bytesProcessed) =>
-        context.progress({
-          bytesProcessed,
-          bytesTotal: source.bytes,
-          progressRatio: relativeProgress(bytesProcessed, source.bytes),
-          speedBytesPerSec: null,
-          etaSeconds: null,
-        }),
-    });
+    const put =
+      payload.replaceUnhealthy === true
+        ? this.storage.replaceFile?.bind(this.storage)
+        : this.storage.putFile.bind(this.storage);
+    if (put === undefined) {
+      this.repository.restoreUnhealthyCopyStatus(
+        targetCopy.id,
+        payload.repairOriginalStatus ?? 'FAILED',
+      );
+      throw new BackupOperationError(
+        'COPY_FAILED',
+        'The filesystem adapter does not support safe replacement repair.',
+        { disposition: 'FAIL' },
+      );
+    }
+    let copied: Awaited<ReturnType<StorageProvider['putFile']>>;
+    try {
+      copied = await put({
+        destination: targetDestination,
+        sourcePath: source.path,
+        relativePath,
+        expectedSha256: source.sha256,
+        expectedBytes: source.bytes,
+        signal: context.signal,
+        onProgress: (bytesProcessed) =>
+          context.progress({
+            bytesProcessed,
+            bytesTotal: source.bytes,
+            progressRatio: relativeProgress(bytesProcessed, source.bytes),
+            speedBytesPerSec: null,
+            etaSeconds: null,
+          }),
+      });
+    } catch (error) {
+      if (payload.replaceUnhealthy === true) {
+        this.repository.restoreUnhealthyCopyStatus(
+          targetCopy.id,
+          payload.repairOriginalStatus ?? 'FAILED',
+        );
+      }
+      throw error;
+    }
     const result = CopyResultSchema.parse({
       mediaCopyId: targetCopy.id,
       relativePath: copied.relativePath,
@@ -1150,6 +1264,17 @@ export class LocalBackupRuntime {
       summary: 'A local media copy was verified with SHA-256.',
     });
     return result;
+  }
+
+  private async verifyFilesystemCopyWithRepairRollback(
+    context: JobExecutionContext,
+  ): Promise<unknown> {
+    try {
+      return await this.verifyFilesystemCopy(context);
+    } catch (error) {
+      await this.restoreRepairTarget(context);
+      throw error;
+    }
   }
 
   private async writeDestinationMetadata(context: JobExecutionContext): Promise<unknown> {
@@ -1413,52 +1538,63 @@ export class LocalBackupRuntime {
     const objectKey = `media:${media.providerMediaId}:video`;
     this.repository.markMediaCopyTransferring(copy.id);
     const persisted = this.repository.getDriveUploadSession(context.job.id);
-    const uploaded = await drive.putFile({
-      destination,
-      sourcePath: source.path,
-      parentProviderId: mediaFolder.providerFileId,
-      name,
-      mimeType: googleDriveMediaMimeType(source.container),
-      expectedSha256: source.sha256,
-      expectedBytes: source.bytes,
-      appProperties: {
-        ytbm: '1',
-        ytbmObjectType: 'video',
-        ytbmObjectKey: objectKey,
-        ytbmSchemaVersion: '1',
-        sourceProvider: 'youtube',
-        providerMediaId: media.providerMediaId,
-        channelId: media.providerChannelId,
-        providerChannelId: media.providerChannelId,
-        artifactType: 'video',
-        sha256: source.sha256,
-      },
-      knownProviderFileId: copy.providerFileId,
-      resumableState: persisted,
-      signal: context.signal,
-      onProgress: (bytesProcessed) =>
-        context.progress({
-          bytesProcessed,
-          bytesTotal: source.bytes,
-          progressRatio: relativeProgress(bytesProcessed, source.bytes),
-          speedBytesPerSec: null,
-          etaSeconds: null,
-        }),
-      onCheckpoint: (checkpoint) => {
-        this.repository.saveDriveUploadSession({
-          jobId: context.job.id,
-          destinationId: destination.id,
-          mediaCopyId: copy.id,
-          parentProviderObjectId: mediaFolder.providerFileId,
-          sessionUri: checkpoint.sessionUri,
-          providerFileId: checkpoint.providerFileId,
-          bytesAcknowledged: checkpoint.bytesAcknowledged,
-          expectedBytes: source.bytes,
-          expectedSha256: source.sha256,
-          sourceReference: source.reference,
-        });
-      },
-    });
+    let uploaded: Awaited<ReturnType<GoogleDriveStorageProvider['putFile']>>;
+    try {
+      uploaded = await drive.putFile({
+        destination,
+        sourcePath: source.path,
+        parentProviderId: mediaFolder.providerFileId,
+        name,
+        mimeType: googleDriveMediaMimeType(source.container),
+        expectedSha256: source.sha256,
+        expectedBytes: source.bytes,
+        appProperties: {
+          ytbm: '1',
+          ytbmObjectType: 'video',
+          ytbmObjectKey: objectKey,
+          ytbmSchemaVersion: '1',
+          sourceProvider: 'youtube',
+          providerMediaId: media.providerMediaId,
+          channelId: media.providerChannelId,
+          providerChannelId: media.providerChannelId,
+          artifactType: 'video',
+          sha256: source.sha256,
+        },
+        knownProviderFileId: copy.providerFileId,
+        resumableState: persisted,
+        signal: context.signal,
+        onProgress: (bytesProcessed) =>
+          context.progress({
+            bytesProcessed,
+            bytesTotal: source.bytes,
+            progressRatio: relativeProgress(bytesProcessed, source.bytes),
+            speedBytesPerSec: null,
+            etaSeconds: null,
+          }),
+        onCheckpoint: (checkpoint) => {
+          this.repository.saveDriveUploadSession({
+            jobId: context.job.id,
+            destinationId: destination.id,
+            mediaCopyId: copy.id,
+            parentProviderObjectId: mediaFolder.providerFileId,
+            sessionUri: checkpoint.sessionUri,
+            providerFileId: checkpoint.providerFileId,
+            bytesAcknowledged: checkpoint.bytesAcknowledged,
+            expectedBytes: source.bytes,
+            expectedSha256: source.sha256,
+            sourceReference: source.reference,
+          });
+        },
+      });
+    } catch (error) {
+      if (payload.replaceUnhealthy === true) {
+        this.repository.restoreUnhealthyCopyStatus(
+          copy.id,
+          payload.repairOriginalStatus ?? 'FAILED',
+        );
+      }
+      throw error;
+    }
     const result = DriveUploadResultSchema.parse({
       mediaCopyId: copy.id,
       relativePath,
@@ -1546,6 +1682,29 @@ export class LocalBackupRuntime {
     return { ...result, providerName: current.name, parents: current.parents };
   }
 
+  private async verifyGoogleDriveCopyWithRepairRollback(
+    context: JobExecutionContext,
+  ): Promise<unknown> {
+    try {
+      return await this.verifyGoogleDriveCopy(context);
+    } catch (error) {
+      await this.restoreRepairTarget(context);
+      throw error;
+    }
+  }
+
+  private async restoreRepairTarget(context: JobExecutionContext): Promise<void> {
+    const repair = z
+      .object({
+        mediaCopyId: z.string().uuid().optional(),
+        repairOriginalStatus: z.string().optional(),
+      })
+      .passthrough()
+      .parse(context.job.payload);
+    if (repair.mediaCopyId === undefined || repair.repairOriginalStatus === undefined) return;
+    this.repository.restoreUnhealthyCopyStatus(repair.mediaCopyId, repair.repairOriginalStatus);
+  }
+
   private async downloadFromGoogleDrive(context: JobExecutionContext): Promise<unknown> {
     const drive = this.requiredGoogleDriveStorage();
     const media = this.requiredMedia(context);
@@ -1625,6 +1784,11 @@ export class LocalBackupRuntime {
     } catch (error) {
       if (error instanceof BackupOperationError && error.code === 'COPY_CORRUPT') {
         this.repository.markMediaCopyFailure(source.id, 'CORRUPT', 'COPY_CORRUPT');
+      } else if (
+        error instanceof BackupOperationError &&
+        error.code === 'PROVIDER_OBJECT_MISSING'
+      ) {
+        this.repository.markMediaCopyFailure(source.id, 'MISSING', 'PROVIDER_OBJECT_MISSING');
       }
       throw error;
     }
@@ -1903,6 +2067,248 @@ export class LocalBackupRuntime {
       context.signal,
     );
     return { mediaCount: manifest.media.length, playlistCount: manifest.playlists.length };
+  }
+
+  private async verifyExistingCopy(context: JobExecutionContext): Promise<unknown> {
+    const payload = z
+      .object({
+        integrityCheckId: z.string().uuid(),
+        mediaCopyId: z.string().uuid(),
+        verificationStrength: z.enum([
+          'LOCAL_SHA256',
+          'PROVIDER_METADATA_SIZE',
+          'DOWNLOADED_SHA256',
+        ]),
+      })
+      .strict()
+      .parse(context.job.payload);
+    const copy = this.repository.getMediaCopy(payload.mediaCopyId);
+    const finish = (
+      result: 'VERIFIED' | 'MISSING' | 'CORRUPT' | 'UNAVAILABLE' | 'ERROR',
+      actualSha256: string | null,
+      actualBytes: number | null,
+      errorCode: string | null,
+      safeMessage: string | null,
+    ): void => {
+      this.repository.completeIntegrityCheck({
+        checkId: payload.integrityCheckId,
+        copyId: copy.id,
+        result,
+        verificationStrength: payload.verificationStrength,
+        actualSha256,
+        actualBytes,
+        errorCode,
+        safeMessage,
+      });
+    };
+    if (copy.sha256 === null || copy.bytes === null) {
+      finish(
+        'ERROR',
+        null,
+        null,
+        'VERIFY_FAILED',
+        'This copy does not have a trusted expected hash and size.',
+      );
+      return { result: 'ERROR' };
+    }
+    if (copy.destinationType === 'FILESYSTEM') {
+      const destination = this.repository.getDestination(copy.destinationId);
+      const probe = await this.probeDestination(copy.destinationId);
+      if (probe.availability === 'DISCONNECTED') {
+        finish(
+          'UNAVAILABLE',
+          null,
+          null,
+          'DESTINATION_DISCONNECTED',
+          'The local destination is disconnected; the copy was not marked missing.',
+        );
+        throw this.disconnected();
+      }
+      const root = await this.storage.resolveCurrentRoot(destination);
+      if (root === null || copy.relativePath === null) {
+        finish(
+          'UNAVAILABLE',
+          null,
+          null,
+          'DESTINATION_DISCONNECTED',
+          'The local destination is unavailable.',
+        );
+        throw this.disconnected();
+      }
+      const path = resolvePathUnderRoot(root, copy.relativePath);
+      try {
+        await assertPathPhysicallyUnderRoot(root, path);
+        const verified = await verifyFileSha256(path, copy.sha256, copy.bytes, {
+          signal: context.signal,
+          onProgress: (progress) =>
+            context.progress({
+              bytesProcessed: progress.bytesProcessed,
+              bytesTotal: progress.bytesTotal,
+              progressRatio: relativeProgress(progress.bytesProcessed, progress.bytesTotal),
+              speedBytesPerSec: null,
+              etaSeconds: null,
+            }),
+        });
+        if (verified.verified) {
+          finish('VERIFIED', verified.sha256, verified.bytes, null, null);
+          return { result: 'VERIFIED', ...verified };
+        }
+        finish(
+          'CORRUPT',
+          verified.sha256,
+          verified.bytes,
+          'COPY_CORRUPT',
+          'The local copy failed SHA-256 verification.',
+        );
+        return { result: 'CORRUPT', ...verified };
+      } catch (error) {
+        if (context.signal.aborted) throw error;
+        if (nodeErrorCode(error) === 'ENOENT') {
+          finish('MISSING', null, null, 'COPY_MISSING', 'The local backup file is missing.');
+          return { result: 'MISSING' };
+        }
+        finish('ERROR', null, null, 'VERIFY_FAILED', 'The local backup file could not be read.');
+        return { result: 'ERROR' };
+      }
+    }
+
+    if (copy.providerFileId === null) {
+      finish(
+        'MISSING',
+        null,
+        null,
+        'PROVIDER_OBJECT_MISSING',
+        'The Google Drive object is missing.',
+      );
+      return { result: 'MISSING' };
+    }
+    const destination = this.repository.getGoogleDriveDestination(copy.destinationId);
+    let current: GoogleDriveObjectStat | null;
+    try {
+      current = await this.requiredGoogleDriveStorage().stat({
+        destination,
+        providerFileId: copy.providerFileId,
+      });
+    } catch (error) {
+      if (context.signal.aborted) throw error;
+      if (
+        error instanceof BackupOperationError &&
+        ['AUTH_REVOKED', 'AUTH_REFRESH_FAILED'].includes(error.code)
+      ) {
+        finish('UNAVAILABLE', null, null, error.code, 'Google Drive authorization is required.');
+        throw new BackupOperationError(error.code, 'Google Drive authorization is required.', {
+          disposition: 'BLOCK',
+        });
+      }
+      if (error instanceof BackupOperationError && error.code === 'NETWORK_UNAVAILABLE') {
+        throw error;
+      }
+      finish('ERROR', null, null, 'VERIFY_FAILED', 'Google Drive metadata could not be checked.');
+      return { result: 'ERROR' };
+    }
+    if (current === null) {
+      finish(
+        'MISSING',
+        null,
+        null,
+        'PROVIDER_OBJECT_MISSING',
+        'The Google Drive object is missing.',
+      );
+      return { result: 'MISSING' };
+    }
+    const media = this.requiredMedia(context);
+    if (
+      current.bytes !== copy.bytes ||
+      current.appProperties.sha256 !== copy.sha256 ||
+      current.appProperties.providerMediaId !== media.providerMediaId
+    ) {
+      finish(
+        'CORRUPT',
+        null,
+        current.bytes,
+        'COPY_CORRUPT',
+        'Google Drive identity, size, or expected hash metadata did not match.',
+      );
+      return { result: 'CORRUPT', actualBytes: current.bytes };
+    }
+    if (payload.verificationStrength === 'PROVIDER_METADATA_SIZE') {
+      finish('VERIFIED', null, current.bytes, null, null);
+      return { result: 'VERIFIED', actualBytes: current.bytes };
+    }
+    const directory = await this.prepareStagingDirectory(
+      join(this.options.stagingRoot, 'integrity', payload.integrityCheckId),
+    );
+    const path = join(directory, `drive-copy.${copy.container ?? 'bin'}`);
+    try {
+      const downloaded = await this.requiredGoogleDriveStorage().getFile({
+        destination,
+        providerFileId: copy.providerFileId,
+        destinationPath: path,
+        expectedSha256: copy.sha256,
+        expectedBytes: copy.bytes,
+        signal: context.signal,
+        onProgress: (bytesProcessed) =>
+          context.progress({
+            bytesProcessed,
+            bytesTotal: copy.bytes,
+            progressRatio: relativeProgress(bytesProcessed, copy.bytes),
+            speedBytesPerSec: null,
+            etaSeconds: null,
+          }),
+      });
+      finish('VERIFIED', downloaded.sha256, downloaded.bytes, null, null);
+      await rm(directory, { recursive: true, force: true });
+      return { result: 'VERIFIED', actualSha256: downloaded.sha256, actualBytes: downloaded.bytes };
+    } catch (error) {
+      if (context.signal.aborted) throw error;
+      if (error instanceof BackupOperationError && error.code === 'COPY_CORRUPT') {
+        finish(
+          'CORRUPT',
+          null,
+          null,
+          'COPY_CORRUPT',
+          'The downloaded Google Drive bytes failed SHA-256 verification.',
+        );
+        await rm(directory, { recursive: true, force: true });
+        return { result: 'CORRUPT' };
+      }
+      if (error instanceof BackupOperationError && error.code === 'PROVIDER_OBJECT_MISSING') {
+        finish(
+          'MISSING',
+          null,
+          null,
+          'PROVIDER_OBJECT_MISSING',
+          'The Google Drive object is missing.',
+        );
+        await rm(directory, { recursive: true, force: true });
+        return { result: 'MISSING' };
+      }
+      if (
+        error instanceof BackupOperationError &&
+        ['AUTH_REVOKED', 'AUTH_REFRESH_FAILED'].includes(error.code)
+      ) {
+        finish('UNAVAILABLE', null, null, error.code, 'Google Drive authorization is required.');
+        throw new BackupOperationError(error.code, 'Google Drive authorization is required.', {
+          disposition: 'BLOCK',
+        });
+      }
+      if (error instanceof BackupOperationError && error.code === 'NETWORK_UNAVAILABLE')
+        throw error;
+      finish('ERROR', null, null, 'VERIFY_FAILED', 'The Google Drive copy could not be verified.');
+      return { result: 'ERROR' };
+    }
+  }
+
+  private async cleanupIntegrityVerification(context: JobExecutionContext): Promise<void> {
+    const payload = z
+      .object({ integrityCheckId: z.string().uuid(), mediaCopyId: z.string().uuid() })
+      .passthrough()
+      .parse(context.job.payload);
+    this.repository.cancelIntegrityCheck(payload.integrityCheckId, payload.mediaCopyId);
+    const directory = this.stagingPath(
+      join(this.options.stagingRoot, 'integrity', payload.integrityCheckId),
+    );
+    await rm(directory, { recursive: true, force: true });
   }
 
   private async cleanupStaging(context: JobExecutionContext): Promise<unknown> {

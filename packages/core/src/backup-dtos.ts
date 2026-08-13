@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import {
   BackupErrorCodeSchema,
+  BackupRunTriggerSchema,
   BackupRunStatusSchema,
   CopyStatusSchema,
   DestinationAvailabilitySchema,
@@ -89,7 +90,7 @@ export const BackupRunDtoSchema = z
     id: z.string().uuid(),
     channelId: z.string().uuid(),
     channelTitle: z.string().min(1),
-    triggerType: z.literal('MANUAL'),
+    triggerType: BackupRunTriggerSchema,
     status: BackupRunStatusSchema,
     effectiveQualityProfile: QualityProfileSchema,
     destinationIds: z.array(z.string().uuid()),
@@ -121,6 +122,7 @@ export const QueueJobDtoSchema = z
   .object({
     id: z.string().uuid(),
     backupRunId: z.string().uuid().nullable(),
+    operationType: BackupRunTriggerSchema.nullable(),
     channelId: z.string().uuid().nullable(),
     mediaItemId: z.string().uuid().nullable(),
     mediaTitle: z.string().nullable(),

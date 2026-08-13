@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, parse } from 'node:path';
@@ -11,7 +12,7 @@ import {
 } from '@ytbm/database/worker';
 import type { YtDlpAdapter } from '@ytbm/download-ytdlp';
 import { MemoryLogSink, StructuredLogger } from '@ytbm/security';
-import type { StorageProvider } from '@ytbm/storage-core';
+import type { GoogleDriveStorageProvider, StorageProvider } from '@ytbm/storage-core';
 import { FilesystemStorageProvider } from '@ytbm/storage-filesystem';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -284,6 +285,14 @@ describe('LocalBackupRuntime durable pipeline', () => {
       }
     });
 
+    expect(await runtime.pendingNotifications()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: 'BACKUP_COMPLETED',
+          route: { section: 'backup', entityId: firstRun.run.id },
+        }),
+      ]),
+    );
     const details = runtime.mediaDetails(fixture.mediaId);
     expect(details.copies).toHaveLength(1);
     expect(details.copies[0]).toMatchObject({
@@ -333,6 +342,42 @@ describe('LocalBackupRuntime durable pipeline', () => {
       runtime.mediaDetails(fixture.mediaId).copies.every((copy) => copy.status === 'VERIFIED'),
     ).toBe(true);
 
+    const copiesBeforeIntegrity = runtime.mediaDetails(fixture.mediaId).copies;
+    const damagedCopy = copiesBeforeIntegrity.find(
+      (copy) => copy.destinationId === destination.id,
+    )!;
+    const damagedPath = join(damagedCopy.destinationPath, damagedCopy.relativePath!);
+    await writeFile(damagedPath, 'x'.repeat(16));
+    const integrityRun = runtime.startIntegrity(
+      { kind: 'COPY', id: damagedCopy.id },
+      'PROVIDER_METADATA_SIZE',
+    );
+    expect(integrityRun.plannedChecks).toBe(1);
+    await eventually(() => {
+      expect(
+        runtime.integrityOverview().history.find((check) => check.runId === integrityRun.runId)
+          ?.result,
+      ).toBe('CORRUPT');
+    });
+    const issue = runtime
+      .integrityOverview()
+      .issues.find((entry) => entry.copyId === damagedCopy.id);
+    expect(issue).toMatchObject({
+      health: 'CORRUPT',
+      repairSources: [expect.objectContaining({ destinationType: 'FILESYSTEM' })],
+    });
+
+    const explicitRepair = await runtime.startRepair(damagedCopy.id, false);
+    expect(explicitRepair.source).toBe('LOCAL');
+    await eventually(() => {
+      const row = fixture.database.sqlite
+        .prepare('select status from backup_runs where id = ?')
+        .get(explicitRepair.runId) as { status: string };
+      expect(row.status).toBe('COMPLETED');
+    });
+    await expect(readFile(damagedPath, 'utf8')).resolves.toBe('verified fixture');
+    expect(download).toHaveBeenCalledTimes(1);
+
     const verifiedBeforeDeletion = runtime.mediaDetails(fixture.mediaId).copies;
     await rm(join(fixture.backupRoot, 'Fixture Channel [UCfixture]'), {
       recursive: true,
@@ -370,6 +415,138 @@ describe('LocalBackupRuntime durable pipeline', () => {
         stat(join(dirname(join(copy.destinationPath, copy.relativePath!)), 'thumbnail.jpg')),
       ).resolves.toMatchObject({ size: 4 });
     }
+  });
+
+  it('labels Drive metadata and downloaded SHA-256 verification without false success', async () => {
+    const fixture = await createFixture();
+    const content = Buffer.from('verified Drive bytes');
+    const sha256 = createHash('sha256').update(content).digest('hex');
+    let reportedBytes = content.byteLength;
+    const drive = {
+      type: 'GOOGLE_DRIVE' as const,
+      probe: async () => ({
+        availability: 'AVAILABLE' as const,
+        availableBytes: null,
+        totalBytes: null,
+        identity: null,
+        safeMessage: null,
+      }),
+      stat: async () => ({
+        providerFileId: 'drive-file',
+        name: 'video.webm',
+        mimeType: 'video/webm',
+        bytes: reportedBytes,
+        parents: ['drive-parent'],
+        appProperties: { sha256, providerMediaId: 'media123' },
+        modifiedTime: null,
+      }),
+      getFile: async (input: { destinationPath: string }) => {
+        await writeFile(input.destinationPath, content);
+        return { path: input.destinationPath, bytes: content.byteLength, sha256 };
+      },
+    } as unknown as GoogleDriveStorageProvider;
+    const now = Date.now();
+    const accountId = crypto.randomUUID();
+    const destinationId = crypto.randomUUID();
+    const copyId = crypto.randomUUID();
+    fixture.database.sqlite
+      .prepare(
+        `insert into accounts (
+          id, provider, provider_account_id, email, credential_ref, drive_credential_ref,
+          capabilities_json, connection_state, connected_at, created_at, updated_at
+        ) values (?, 'GOOGLE', ?, 'drive@example.test', ?, ?, ?, 'CONNECTED', ?, ?, ?)`,
+      )
+      .run(
+        accountId,
+        `subject-${accountId}`,
+        `youtube:${accountId}`,
+        `drive:${accountId}`,
+        JSON.stringify({
+          youtubeReadonly: true,
+          driveFile: true,
+          driveConnectionState: 'CONNECTED',
+          grantedScopes: [],
+        }),
+        now,
+        now,
+        now,
+      );
+    fixture.database.sqlite
+      .prepare(
+        `insert into destinations (
+          id, destination_type, account_id, provider_root_id, enabled, availability_status,
+          created_at, updated_at
+        ) values (?, 'GOOGLE_DRIVE', ?, 'drive-root', 1, 'AVAILABLE', ?, ?)`,
+      )
+      .run(destinationId, accountId, now, now);
+    fixture.database.sqlite
+      .prepare(
+        `insert into channel_destinations (
+          channel_id, destination_id, enabled, created_at, updated_at
+        ) values (?, ?, 1, ?, ?)`,
+      )
+      .run(fixture.channelId, destinationId, now, now);
+    fixture.database.sqlite
+      .prepare(
+        `insert into media_copies (
+          id, media_item_id, destination_id, provider_file_id, container, bytes, sha256,
+          quality_profile, content_generation, verification_strength, status, verified_at,
+          created_at, updated_at
+        ) values (?, ?, ?, 'drive-file', 'webm', ?, ?, 'MAX_1080P', 'q1:MAX_1080P',
+          'PROVIDER_METADATA_SIZE', 'VERIFIED', ?, ?, ?)`,
+      )
+      .run(copyId, fixture.mediaId, destinationId, content.byteLength, sha256, now, now, now);
+    const runtime = new LocalBackupRuntime({
+      workerId: 'worker-drive-integrity-test',
+      database: fixture.database,
+      stagingRoot: fixture.stagingRoot,
+      ytDlpExecutable: 'fixture-yt-dlp.exe',
+      ffmpegExecutable: 'fixture-ffmpeg.exe',
+      logger: new StructuredLogger('drive-integrity-test', new MemoryLogSink()),
+      settings: async () => DEFAULT_APP_SETTINGS,
+      storage: fixture.storage,
+      googleDriveStorage: drive,
+      ytDlp: {
+        version: async () => 'fixture',
+        probe: async (providerMediaId) => fakeProbe(providerMediaId, 'MAX_1080P'),
+        download: vi.fn<YtDlpAdapter['download']>(),
+      },
+      ffmpeg: fakeFfmpeg(),
+    });
+    runtimes.push(runtime);
+    runtime.start();
+
+    const metadataRun = runtime.startIntegrity(
+      { kind: 'COPY', id: copyId },
+      'PROVIDER_METADATA_SIZE',
+    );
+    await eventually(() => {
+      expect(
+        runtime.integrityOverview().history.find((check) => check.runId === metadataRun.runId),
+      ).toMatchObject({ result: 'VERIFIED', verificationStrength: 'PROVIDER_METADATA_SIZE' });
+    });
+
+    reportedBytes += 1;
+    const mismatchRun = runtime.startIntegrity(
+      { kind: 'COPY', id: copyId },
+      'PROVIDER_METADATA_SIZE',
+    );
+    await eventually(() => {
+      expect(
+        runtime.integrityOverview().history.find((check) => check.runId === mismatchRun.runId),
+      ).toMatchObject({ result: 'CORRUPT' });
+    });
+
+    reportedBytes = content.byteLength;
+    fixture.database.sqlite
+      .prepare("update media_copies set status = 'VERIFIED' where id = ?")
+      .run(copyId);
+    const shaRun = runtime.startIntegrity({ kind: 'COPY', id: copyId }, 'DOWNLOADED_SHA256');
+    await eventually(() => {
+      expect(
+        runtime.integrityOverview().history.find((check) => check.runId === shaRun.runId),
+      ).toMatchObject({ result: 'VERIFIED', verificationStrength: 'DOWNLOADED_SHA256' });
+    });
   });
 
   it('retains a partial on shutdown and resumes the interrupted job after restart', async () => {

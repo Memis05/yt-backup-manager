@@ -46,6 +46,7 @@ export interface StorageProvider {
   readonly type: 'FILESYSTEM';
   probe(destination: StoredFilesystemDestination): Promise<DestinationProbe>;
   putFile(input: PutFileInput): Promise<PutFileResult>;
+  replaceFile?(input: PutFileInput): Promise<PutFileResult>;
   resolveCurrentRoot(destination: StoredFilesystemDestination): Promise<string | null>;
 }
 

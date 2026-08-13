@@ -6,3 +6,4 @@ export * from './services/database-health';
 export * from './services/durable-jobs';
 export * from './services/local-backup';
 export * from './services/source-catalog';
+export * from './services/scheduling';
