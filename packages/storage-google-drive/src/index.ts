@@ -14,6 +14,7 @@ import type {
   GetGoogleDriveFileResult,
   GoogleDriveCapacityInfo,
   GoogleDriveObjectRef,
+  GoogleDriveRecoveryObjectPage,
   GoogleDriveObjectStat,
   GoogleDriveResumableState,
   GoogleDriveStorageProvider as GoogleDriveStorageProviderContract,
@@ -21,6 +22,8 @@ import type {
   PutGoogleDriveFileInput,
   PutGoogleDriveFileResult,
   StoredGoogleDriveDestination,
+  GetGoogleDriveTextContentInput,
+  ListGoogleDriveRecoveryObjectsInput,
 } from '@ytbm/storage-core';
 
 const DRIVE_FOLDER_MIME = 'application/vnd.google-apps.folder';
@@ -56,6 +59,7 @@ interface DriveFileResponse {
 
 interface DriveListResponse {
   files?: unknown;
+  nextPageToken?: unknown;
 }
 
 class ResumableSessionExpiredError extends Error {
@@ -412,6 +416,108 @@ export class GoogleDriveStorageProvider implements GoogleDriveStorageProviderCon
     if (response.status === 404) return null;
     if (!response.ok) throw await providerError(response);
     return objectStat((await responseJson(response)) as DriveFileResponse);
+  }
+
+  public async listRecoveryObjects(
+    input: ListGoogleDriveRecoveryObjectsInput,
+  ): Promise<GoogleDriveRecoveryObjectPage> {
+    const q = [
+      'trashed = false',
+      "appProperties has { key='ytbmSchemaVersion' and value='1' }",
+    ].join(' and ');
+    const fields = 'nextPageToken,files(id,name,mimeType,size,parents,appProperties,modifiedTime)';
+    const query = new URLSearchParams({
+      q,
+      spaces: 'drive',
+      pageSize: '1000',
+      fields,
+    });
+    if (input.pageToken !== null) {
+      if (input.pageToken.length === 0 || input.pageToken.length > 2_000) {
+        throw new BackupOperationError(
+          'PROVIDER_5XX',
+          'Google Drive returned an invalid recovery page token.',
+          { disposition: 'RETRY' },
+        );
+      }
+      query.set('pageToken', input.pageToken);
+    }
+    const response = await this.authorizedFetch(
+      input.destination,
+      `${this.apiRoot}/files?${query.toString()}`,
+      {
+        method: 'GET',
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+      },
+    );
+    if (!response.ok) throw await providerError(response);
+    const body = (await responseJson(response)) as DriveListResponse;
+    const objects = Array.isArray(body.files)
+      ? body.files.map((entry) => objectStat(entry as DriveFileResponse))
+      : [];
+    const nextPageToken =
+      typeof body.nextPageToken === 'string' && body.nextPageToken.length > 0
+        ? body.nextPageToken
+        : null;
+    return { objects, nextPageToken };
+  }
+
+  public async getTextContent(input: GetGoogleDriveTextContentInput): Promise<string> {
+    validateProviderId(input.providerFileId);
+    if (!Number.isSafeInteger(input.maximumBytes) || input.maximumBytes < 1) {
+      throw new BackupOperationError('MANIFEST_INVALID', 'Recovery JSON size limit is invalid.', {
+        disposition: 'FAIL',
+      });
+    }
+    const response = await this.authorizedFetch(
+      input.destination,
+      `${this.apiRoot}/files/${encodeURIComponent(input.providerFileId)}?alt=media`,
+      {
+        method: 'GET',
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+      },
+    );
+    if (response.status === 404) {
+      throw new BackupOperationError(
+        'PROVIDER_OBJECT_MISSING',
+        'A Google Drive recovery sidecar is missing.',
+        { disposition: 'FAIL' },
+      );
+    }
+    if (!response.ok) throw await providerError(response);
+    const declared = safeInteger(response.headers.get('content-length'));
+    if (declared !== null && declared > input.maximumBytes) {
+      throw new BackupOperationError(
+        'MANIFEST_INVALID',
+        'A Google Drive recovery sidecar exceeds the allowed size.',
+        { disposition: 'FAIL' },
+      );
+    }
+    const reader = response.body?.getReader();
+    if (reader === undefined) return '';
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      total += chunk.value.byteLength;
+      if (total > input.maximumBytes) {
+        await reader.cancel();
+        throw new BackupOperationError(
+          'MANIFEST_INVALID',
+          'A Google Drive recovery sidecar exceeds the allowed size.',
+          { disposition: 'FAIL' },
+        );
+      }
+      chunks.push(chunk.value);
+    }
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
   }
 
   public async putFile(input: PutGoogleDriveFileInput): Promise<PutGoogleDriveFileResult> {

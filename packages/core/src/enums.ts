@@ -158,6 +158,44 @@ export const SourceSyncStatusSchema = z.enum([
   'COMPLETED',
   'FAILED',
 ]);
+export const RecoverySessionStatusSchema = z.enum([
+  'DRAFT',
+  'SCANNING',
+  'READY_FOR_REVIEW',
+  'IMPORTING',
+  'COMPLETED',
+  'COMPLETED_WITH_WARNINGS',
+  'FAILED',
+  'CANCELLED',
+]);
+export const RecoverySourceTypeSchema = z.enum(['FILESYSTEM', 'GOOGLE_DRIVE']);
+export const RecoverySourceStatusSchema = z.enum([
+  'PENDING',
+  'SCANNING',
+  'SCANNED',
+  'FAILED',
+  'CANCELLED',
+]);
+export const RecoveryWarningCodeSchema = z.enum([
+  'MANIFEST_MISSING',
+  'MANIFEST_INVALID',
+  'UNSUPPORTED_SCHEMA',
+  'METADATA_INVALID',
+  'PLAYLIST_INVALID',
+  'FILE_MISSING',
+  'SIZE_MISMATCH',
+  'HASH_CONFLICT',
+  'DUPLICATE_OBJECT',
+  'AMBIGUOUS_DESTINATION',
+  'DRIVE_ROOT_DUPLICATE',
+  'DRIVE_OBJECT_MISSING',
+  'DRIVE_AUTH_REQUIRED',
+  'PARTIAL_BACKUP',
+  'ORPHAN_MEDIA_FILE',
+  'ORPHAN_METADATA',
+  'UNSAFE_PATH',
+  'UNKNOWN_MEDIA_REFERENCE',
+]);
 export const SourceErrorCodeSchema = z.enum([
   'AUTH_EXPIRED',
   'AUTH_REFRESH_FAILED',
@@ -193,4 +231,8 @@ export type OAuthFlowStatus = z.infer<typeof OAuthFlowStatusSchema>;
 export type GoogleOAuthCapability = z.infer<typeof GoogleOAuthCapabilitySchema>;
 export type DriveCapabilityState = z.infer<typeof DriveCapabilityStateSchema>;
 export type SourceSyncStatus = z.infer<typeof SourceSyncStatusSchema>;
+export type RecoverySessionStatus = z.infer<typeof RecoverySessionStatusSchema>;
+export type RecoverySourceType = z.infer<typeof RecoverySourceTypeSchema>;
+export type RecoverySourceStatus = z.infer<typeof RecoverySourceStatusSchema>;
+export type RecoveryWarningCode = z.infer<typeof RecoveryWarningCodeSchema>;
 export type SourceErrorCode = z.infer<typeof SourceErrorCodeSchema>;

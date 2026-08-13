@@ -125,6 +125,9 @@ importers:
       '@ytbm/media-ffmpeg':
         specifier: workspace:*
         version: link:../../packages/media-ffmpeg
+      '@ytbm/recovery':
+        specifier: workspace:*
+        version: link:../../packages/recovery
       '@ytbm/security':
         specifier: workspace:*
         version: link:../../packages/security
@@ -261,6 +264,27 @@ importers:
       '@ytbm/core':
         specifier: workspace:*
         version: link:../core
+
+  packages/recovery:
+    dependencies:
+      '@ytbm/core':
+        specifier: workspace:*
+        version: link:../core
+      '@ytbm/database':
+        specifier: workspace:*
+        version: link:../database
+      '@ytbm/manifest':
+        specifier: workspace:*
+        version: link:../manifest
+      '@ytbm/storage-core':
+        specifier: workspace:*
+        version: link:../storage-core
+      '@ytbm/storage-filesystem':
+        specifier: workspace:*
+        version: link:../storage-filesystem
+      zod:
+        specifier: 'catalog:'
+        version: 4.4.3
 
   packages/security: {}
 

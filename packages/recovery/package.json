@@ -1,0 +1,26 @@
+{
+  "name": "@ytbm/recovery",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts --clean --external better-sqlite3",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ytbm/core": "workspace:*",
+    "@ytbm/database": "workspace:*",
+    "@ytbm/manifest": "workspace:*",
+    "@ytbm/storage-core": "workspace:*",
+    "@ytbm/storage-filesystem": "workspace:*",
+    "zod": "catalog:"
+  }
+}

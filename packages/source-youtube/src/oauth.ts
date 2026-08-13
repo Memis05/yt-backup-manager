@@ -58,6 +58,7 @@ export interface GoogleAccountRecord {
 }
 
 export interface ConnectedGoogleAccountInput {
+  accountId?: string;
   providerAccountId: string;
   email: string | null;
   displayName: string | null;
@@ -246,13 +247,6 @@ export class GoogleAccountService {
       };
     }
 
-    if (capability === 'GOOGLE_DRIVE' && expectedAccountId === null) {
-      throw new SourceProviderError(
-        'SOURCE_UNAVAILABLE',
-        'Connect the Google account for YouTube before enabling Google Drive.',
-        false,
-      );
-    }
     if (
       expectedAccountId !== null &&
       (await this.accounts.getAccountRecord(expectedAccountId)) === null
@@ -388,6 +382,12 @@ export class GoogleAccountService {
     await this.credentials.delete(account.credentialRef);
     if (account.driveCredentialRef !== null) {
       await this.credentials.delete(account.driveCredentialRef);
+      await this.accounts.setDriveCapabilityState(
+        accountId,
+        'AUTHORIZATION_REQUIRED',
+        null,
+        this.now(),
+      );
     }
     return this.accounts.setAccountConnectionState(accountId, 'DISCONNECTED', null, this.now());
   }
@@ -398,8 +398,18 @@ export class GoogleAccountService {
     capability: GoogleOAuthCapability = 'YOUTUBE',
   ): Promise<string> {
     const account = await this.accounts.getAccountRecord(accountId);
-    if (account === null || account.connectionState === 'DISCONNECTED') {
+    if (account === null) {
       throw new SourceProviderError('AUTH_REVOKED', 'Google authorization is disconnected.', false);
+    }
+    if (capability === 'YOUTUBE' && account.connectionState === 'DISCONNECTED') {
+      throw new SourceProviderError('AUTH_REVOKED', 'Google authorization is disconnected.', false);
+    }
+    if (capability === 'GOOGLE_DRIVE' && account.driveConnectionState !== 'CONNECTED') {
+      throw new SourceProviderError(
+        'AUTH_REVOKED',
+        'Google Drive authorization is required for this account.',
+        false,
+      );
     }
     const credentialRef =
       capability === 'GOOGLE_DRIVE' ? account.driveCredentialRef : account.credentialRef;
@@ -808,6 +818,7 @@ export class GoogleAccountService {
     try {
       return AccountDtoSchema.parse(
         await this.accounts.upsertConnectedAccount({
+          accountId,
           providerAccountId,
           email: nullableString(identity.email),
           displayName: nullableString(identity.name),

@@ -145,10 +145,7 @@ export class DrizzleGoogleAccountRepository implements GoogleAccountPersistence 
 
   public async upsertConnectedAccount(input: ConnectedGoogleAccountInput): Promise<AccountDto> {
     const existing = await this.findByProviderAccountId(input.providerAccountId);
-    if (input.capability === 'GOOGLE_DRIVE' && existing === null) {
-      throw new Error('Drive authorization must match an existing Google account');
-    }
-    const id = existing?.id ?? randomUUID();
+    const id = existing?.id ?? input.accountId ?? randomUUID();
     const previousCapabilities =
       existing === null
         ? null
@@ -187,13 +184,17 @@ export class DrizzleGoogleAccountRepository implements GoogleAccountPersistence 
     });
     const transaction = this.database.sqlite.transaction(() => {
       if (existing === null) {
+        const youtubeCredentialRef =
+          input.capability === 'YOUTUBE' ? input.credentialRef : `google-oauth:${id}`;
+        const driveCredentialRef = input.capability === 'GOOGLE_DRIVE' ? input.credentialRef : null;
+        const connectionState = input.capability === 'YOUTUBE' ? 'CONNECTED' : 'DISCONNECTED';
         this.database.sqlite
           .prepare(
             `insert into accounts (
               id, provider, provider_account_id, email, display_name, avatar_url,
               credential_ref, drive_credential_ref, capabilities_json, connection_state, connected_at, last_auth_at,
               last_error_code, last_error_at, created_at, updated_at
-            ) values (?, 'GOOGLE', ?, ?, ?, ?, ?, null, ?, 'CONNECTED', ?, ?, null, null, ?, ?)`,
+            ) values (?, 'GOOGLE', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, null, null, ?, ?)`,
           )
           .run(
             id,
@@ -201,8 +202,10 @@ export class DrizzleGoogleAccountRepository implements GoogleAccountPersistence 
             input.email,
             input.displayName,
             input.avatarUrl,
-            input.credentialRef,
+            youtubeCredentialRef,
+            driveCredentialRef,
             capabilitiesJson,
+            connectionState,
             input.connectedAt,
             input.connectedAt,
             input.connectedAt,

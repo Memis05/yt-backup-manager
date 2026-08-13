@@ -5,9 +5,11 @@ import { dirname, isAbsolute, join, posix, relative, resolve } from 'node:path';
 
 import {
   BackupOperationError,
+  DestinationAvailabilitySchema,
   DestinationDtoSchema,
   QualityProfileSchema,
   ToolDiagnosticsSchema,
+  destinationAvailabilityError,
   type AppSettings,
   type BackupStartResult,
   type ChannelBackupSettingsDto,
@@ -185,6 +187,17 @@ function errorCodeForProbe(probe: DestinationProbe): string | null {
   return 'COPY_FAILED';
 }
 
+function persistedDestinationProbe(availability: unknown): DestinationProbe {
+  const parsedAvailability = DestinationAvailabilitySchema.parse(availability);
+  return {
+    availability: parsedAvailability,
+    availableBytes: null,
+    totalBytes: null,
+    identity: null,
+    safeMessage: destinationAvailabilityError(parsedAvailability)?.message ?? null,
+  };
+}
+
 function relativeProgress(processed: number, total: number | null): number | null {
   return total === null || total === 0 ? null : Math.min(1, processed / total);
 }
@@ -296,6 +309,7 @@ export class LocalBackupRuntime {
   private readonly ffmpeg: Pick<FfmpegAdapter, 'version' | 'postProcess'>;
   private readonly engine: DurableJobEngine;
   private destinationProbeTimer: NodeJS.Timeout | null = null;
+  private readonly destinationProbes = new Map<string, DestinationProbe>();
   private reconciliationCursor: string | null = null;
   private refreshPromise: Promise<void> | null = null;
   private stopping = false;
@@ -385,6 +399,7 @@ export class LocalBackupRuntime {
       availabilityStatus: probe.availability,
       lastErrorCode: null,
     });
+    this.destinationProbes.set(stored.id, probe);
     return this.destinationDto(stored.id, probe);
   }
 
@@ -401,22 +416,29 @@ export class LocalBackupRuntime {
       throw new Error(probe.safeMessage ?? 'Google Drive is not available for this account');
     }
     await this.ensureDriveRootForDestination(destination.id);
+    this.destinationProbes.set(destination.id, probe);
     return this.googleDriveDestinationDto(destination.id, probe);
   }
 
   public async listDestinations(): Promise<DestinationDto[]> {
-    const filesystem = await Promise.all(
-      this.repository.listDestinations().map(async (destination) => {
-        const probe = await this.probeDestination(destination.id);
-        return this.destinationDto(destination.id, probe);
-      }),
-    );
-    const drive = await Promise.all(
-      this.repository.listGoogleDriveDestinations().map(async (destination) => {
-        const probe = await this.probeGoogleDriveDestination(destination.id);
-        return this.googleDriveDestinationDto(destination.id, probe);
-      }),
-    );
+    const filesystem = this.repository
+      .listDestinations()
+      .map((destination) =>
+        this.destinationDto(
+          destination.id,
+          this.destinationProbes.get(destination.id) ??
+            persistedDestinationProbe(destination.availabilityStatus),
+        ),
+      );
+    const drive = this.repository
+      .listGoogleDriveDestinations()
+      .map((destination) =>
+        this.googleDriveDestinationDto(
+          destination.id,
+          this.destinationProbes.get(destination.id) ??
+            persistedDestinationProbe(destination.availabilityStatus),
+        ),
+      );
     return [...filesystem, ...drive];
   }
 
@@ -1371,11 +1393,14 @@ export class LocalBackupRuntime {
       archiveFolderName(media.title, media.providerMediaId),
       'MEDIA_FOLDER',
       {
+        ytbm: '1',
+        ytbmObjectType: 'media',
         ytbmObjectKey: `media:${media.providerMediaId}`,
         ytbmSchemaVersion: '1',
         sourceProvider: 'youtube',
         providerMediaId: media.providerMediaId,
         channelId: media.providerChannelId,
+        providerChannelId: media.providerChannelId,
       },
     );
     const name = `video.${source.container}`;
@@ -1397,11 +1422,14 @@ export class LocalBackupRuntime {
       expectedSha256: source.sha256,
       expectedBytes: source.bytes,
       appProperties: {
+        ytbm: '1',
+        ytbmObjectType: 'video',
         ytbmObjectKey: objectKey,
         ytbmSchemaVersion: '1',
         sourceProvider: 'youtube',
         providerMediaId: media.providerMediaId,
         channelId: media.providerChannelId,
+        providerChannelId: media.providerChannelId,
         artifactType: 'video',
         sha256: source.sha256,
       },
@@ -1670,10 +1698,13 @@ export class LocalBackupRuntime {
       mimeType: 'application/json',
       content,
       appProperties: {
+        ytbm: '1',
+        ytbmObjectType: 'metadata',
         ytbmObjectKey: `media:${media.providerMediaId}:metadata`,
         ytbmSchemaVersion: '1',
         sourceProvider: 'youtube',
         providerMediaId: media.providerMediaId,
+        providerChannelId: media.providerChannelId,
         artifactType: 'metadata',
         sha256: hash.sha256,
       },
@@ -1740,10 +1771,13 @@ export class LocalBackupRuntime {
       mimeType: 'image/jpeg',
       content,
       appProperties: {
+        ytbm: '1',
+        ytbmObjectType: 'thumbnail',
         ytbmObjectKey: `media:${media.providerMediaId}:thumbnail`,
         ytbmSchemaVersion: '1',
         sourceProvider: 'youtube',
         providerMediaId: media.providerMediaId,
+        providerChannelId: media.providerChannelId,
         artifactType: 'thumbnail',
         sha256: hash.sha256,
       },
@@ -1791,11 +1825,14 @@ export class LocalBackupRuntime {
         archiveFolderName(playlist.title, playlist.providerPlaylistId),
         'PLAYLIST_FOLDER',
         {
+          ytbm: '1',
+          ytbmObjectType: 'playlist',
           ytbmObjectKey: `playlist:${playlist.providerPlaylistId}`,
           ytbmSchemaVersion: '1',
           sourceProvider: 'youtube',
           providerPlaylistId: playlist.providerPlaylistId,
           channelId: data.providerChannelId,
+          providerChannelId: data.providerChannelId,
         },
       );
       const playlistDocument = PlaylistSidecarSchema.parse({
@@ -2009,6 +2046,8 @@ export class LocalBackupRuntime {
       name: GOOGLE_DRIVE_ROOT_NAME,
       logicalKey: 'root',
       appProperties: {
+        ytbm: '1',
+        ytbmObjectType: 'backup-root',
         ytbmObjectKey: 'root',
         ytbmSchemaVersion: '1',
         artifactType: 'backup-root',
@@ -2097,10 +2136,13 @@ export class LocalBackupRuntime {
       archiveFolderName(channelTitle, providerChannelId),
       'CHANNEL_FOLDER',
       {
+        ytbm: '1',
+        ytbmObjectType: 'channel',
         ytbmObjectKey: `channel:${providerChannelId}`,
         ytbmSchemaVersion: '1',
         sourceProvider: 'youtube',
         channelId: providerChannelId,
+        providerChannelId,
       },
     );
     const categories = {} as Record<
@@ -2121,10 +2163,13 @@ export class LocalBackupRuntime {
         name,
         'CATEGORY_FOLDER',
         {
+          ytbm: '1',
+          ytbmObjectType: 'category',
           ytbmObjectKey: `channel:${providerChannelId}:folder:${key}`,
           ytbmSchemaVersion: '1',
           sourceProvider: 'youtube',
           channelId: providerChannelId,
+          providerChannelId,
           artifactType: key.toLowerCase(),
         },
       );
@@ -2149,11 +2194,14 @@ export class LocalBackupRuntime {
       archiveFolderName(media.title, media.providerMediaId),
       'MEDIA_FOLDER',
       {
+        ytbm: '1',
+        ytbmObjectType: 'media',
         ytbmObjectKey: `media:${media.providerMediaId}`,
         ytbmSchemaVersion: '1',
         sourceProvider: 'youtube',
         providerMediaId: media.providerMediaId,
         channelId: media.providerChannelId,
+        providerChannelId: media.providerChannelId,
       },
     );
   }
@@ -2176,6 +2224,8 @@ export class LocalBackupRuntime {
       mimeType: 'application/json',
       content,
       appProperties: {
+        ytbm: '1',
+        ytbmObjectType: 'json-sidecar',
         ytbmObjectKey: logicalKey,
         ytbmSchemaVersion: '1',
         artifactType: 'json-sidecar',
@@ -2435,6 +2485,7 @@ export class LocalBackupRuntime {
     if (probe.availability === 'AVAILABLE') {
       this.jobs.unblockDestination(destinationId, this.now());
     }
+    this.destinationProbes.set(destinationId, probe);
     return probe;
   }
 
@@ -2472,6 +2523,7 @@ export class LocalBackupRuntime {
         probe.availability,
         'INTERNAL_ERROR',
       );
+      this.destinationProbes.set(destinationId, probe);
       return probe;
     }
     const probe = await this.googleDriveStorage.probe(destination);
@@ -2483,6 +2535,7 @@ export class LocalBackupRuntime {
     if (probe.availability === 'AVAILABLE') {
       this.jobs.unblockDestination(destinationId, this.now());
     }
+    this.destinationProbes.set(destinationId, probe);
     return probe;
   }
 

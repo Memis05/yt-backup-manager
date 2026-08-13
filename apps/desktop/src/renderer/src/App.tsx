@@ -18,6 +18,7 @@ import type {
   QualityProfile,
   QueueSection,
   QueueSnapshot,
+  RecoverySessionDto,
   SourceStatus,
   SourceSyncJobDto,
   ToolDiagnostics,
@@ -25,7 +26,16 @@ import type {
 } from '@ytbm/core';
 
 type Section =
-  'dashboard' | 'accounts' | 'channels' | 'library' | 'playlists' | 'backup' | 'queue' | 'storage';
+  | 'dashboard'
+  | 'accounts'
+  | 'channels'
+  | 'library'
+  | 'playlists'
+  | 'backup'
+  | 'queue'
+  | 'storage'
+  | 'settings'
+  | 'recovery';
 type LibraryView = 'grid' | 'list';
 
 const QUEUE_PAGE_SIZE = 50;
@@ -57,7 +67,14 @@ const NAVIGATION: Array<{ id: Section; label: string }> = [
   { id: 'backup', label: 'Backup' },
   { id: 'queue', label: 'Queue' },
   { id: 'storage', label: 'Storage' },
+  { id: 'settings', label: 'Settings' },
 ];
+
+function sectionLabel(section: Section): string {
+  return section === 'recovery'
+    ? 'Disaster recovery'
+    : (NAVIGATION.find((item) => item.id === section)?.label ?? 'YouTube Backup Manager');
+}
 
 const QUALITY_OPTIONS: Array<{ value: QualityProfile; label: string }> = [
   { value: 'BEST_AVAILABLE', label: 'Best available' },
@@ -185,6 +202,7 @@ export function App() {
   const [mediaDetails, setMediaDetails] = useState<MediaBackupDetails | null>(null);
   const [toolDiagnostics, setToolDiagnostics] = useState<ToolDiagnostics | null>(null);
   const [dashboard, setDashboard] = useState<DashboardSummary | null>(null);
+  const [recovery, setRecovery] = useState<RecoverySessionDto | null>(null);
 
   const [libraryView, setLibraryView] = useState<LibraryView>('grid');
   const [librarySearch, setLibrarySearch] = useState('');
@@ -384,6 +402,29 @@ export function App() {
       window.clearInterval(timer);
     };
   }, [section, queueSection, queuePage]);
+
+  useEffect(() => {
+    if (
+      section !== 'recovery' ||
+      recovery === null ||
+      !['SCANNING', 'IMPORTING'].includes(recovery.status)
+    ) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void window.ytbm
+        .getRecoverySession(recovery.id)
+        .then(async (session) => {
+          setRecovery(session);
+          if (['COMPLETED', 'COMPLETED_WITH_WARNINGS'].includes(session.status)) {
+            await refreshCore();
+            setNotice('Backup catalog restored. Existing verified copies are ready for planning.');
+          }
+        })
+        .catch((caught: unknown) => setError(safeMessage(caught)));
+    }, 750);
+    return () => window.clearInterval(timer);
+  }, [section, recovery, refreshCore]);
 
   const selectedChannels = useMemo(
     () => channels.filter((channel) => channel.backupEnabled),
@@ -643,6 +684,74 @@ export function App() {
     setQueuePage(1);
   };
 
+  const openRecovery = async (startFresh = false): Promise<void> => {
+    setBusy('recovery-open');
+    setError(null);
+    try {
+      const session = startFresh
+        ? await window.ytbm.createRecoverySession()
+        : ((await window.ytbm.getLatestRecoverySession()) ??
+          (await window.ytbm.createRecoverySession()));
+      setRecovery(session);
+      setSection('recovery');
+    } catch (caught) {
+      setError(safeMessage(caught));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const addRecoveryLocalSource = async (): Promise<void> => {
+    if (recovery === null) return;
+    setBusy('recovery-local');
+    setError(null);
+    try {
+      const session = await window.ytbm.addRecoveryLocalSource(recovery.id);
+      if (session !== null) setRecovery(session);
+    } catch (caught) {
+      setError(safeMessage(caught));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const addRecoveryDriveSource = async (accountId: string): Promise<void> => {
+    if (recovery === null) return;
+    setBusy(`recovery-drive:${accountId}`);
+    setError(null);
+    try {
+      setRecovery(await window.ytbm.addRecoveryDriveSource(recovery.id, accountId));
+    } catch (caught) {
+      setError(safeMessage(caught));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const scanRecovery = async (): Promise<void> => {
+    if (recovery === null) return;
+    setError(null);
+    try {
+      setRecovery(await window.ytbm.startRecoveryScan(recovery.id));
+    } catch (caught) {
+      setError(safeMessage(caught));
+    }
+  };
+
+  const importRecovery = async (): Promise<void> => {
+    if (recovery === null) return;
+    const confirmed = window.confirm(
+      `Restore ${recovery.counts.media} media records and ${recovery.counts.copies} copy records into the local catalog? Backup files will not be changed.`,
+    );
+    if (!confirmed) return;
+    setError(null);
+    try {
+      setRecovery(await window.ytbm.startRecoveryImport(recovery.id));
+    } catch (caught) {
+      setError(safeMessage(caught));
+    }
+  };
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -679,11 +788,17 @@ export function App() {
         <header className="topbar">
           <div>
             <p className="eyebrow">YouTube Backup Manager</p>
-            <h1>{NAVIGATION.find((item) => item.id === section)?.label}</h1>
+            <h1>{sectionLabel(section)}</h1>
           </div>
           <div className="topbar-meta">
             <span>
-              {accounts.filter((account) => account.connectionState === 'CONNECTED').length}{' '}
+              {
+                accounts.filter(
+                  (account) =>
+                    account.connectionState === 'CONNECTED' ||
+                    account.capabilities.driveConnectionState === 'CONNECTED',
+                ).length
+              }{' '}
               accounts
             </span>
             <span>{library.total} media indexed</span>
@@ -721,6 +836,23 @@ export function App() {
             </div>
             {dashboard === null ? (
               <div className="loading-panel">Loading backup health…</div>
+            ) : dashboard.mediaCount === 0 && destinations.length === 0 ? (
+              <div className="welcome-panel">
+                <p className="eyebrow">Get started</p>
+                <h2>Set up a new archive or restore an existing one</h2>
+                <p>
+                  Recovery scans only app-created manifests and sidecars. It does not download from
+                  YouTube or modify backup files.
+                </p>
+                <div className="section-actions">
+                  <button className="button button--primary" onClick={() => setSection('accounts')}>
+                    Set up new backup
+                  </button>
+                  <button className="button button--secondary" onClick={() => void openRecovery()}>
+                    Restore existing backup
+                  </button>
+                </div>
+              </div>
             ) : (
               <>
                 <div className="dashboard-grid">
@@ -828,7 +960,10 @@ export function App() {
                               : 'neutral'
                         }
                       >
-                        YouTube {account.connectionState.replaceAll('_', ' ')}
+                        YouTube{' '}
+                        {account.capabilities.youtubeReadonly
+                          ? account.connectionState.replaceAll('_', ' ')
+                          : 'NOT CONNECTED'}
                       </StatePill>
                       <StatePill
                         tone={
@@ -843,7 +978,8 @@ export function App() {
                       </StatePill>
                     </div>
                     <div className="account-actions">
-                      {account.connectionState === 'CONNECTED' ? (
+                      {account.connectionState === 'CONNECTED' &&
+                      account.capabilities.youtubeReadonly ? (
                         <button
                           className="button button--secondary"
                           disabled={busy !== null}
@@ -860,20 +996,22 @@ export function App() {
                           Reconnect
                         </button>
                       )}
-                      {account.connectionState === 'CONNECTED' ? (
-                        <button
-                          className="button button--secondary"
-                          disabled={busy !== null}
-                          onClick={() => void connectDrive(account.id)}
-                        >
-                          {account.capabilities.driveConnectionState === 'CONNECTED'
-                            ? 'Reconnect Drive'
-                            : 'Enable Drive'}
-                        </button>
-                      ) : null}
+                      <button
+                        className="button button--secondary"
+                        disabled={busy !== null}
+                        onClick={() => void connectDrive(account.id)}
+                      >
+                        {account.capabilities.driveConnectionState === 'CONNECTED'
+                          ? 'Reconnect Drive'
+                          : 'Enable Drive'}
+                      </button>
                       <button
                         className="button button--danger"
-                        disabled={busy !== null || account.connectionState === 'DISCONNECTED'}
+                        disabled={
+                          busy !== null ||
+                          (account.connectionState === 'DISCONNECTED' &&
+                            account.capabilities.driveConnectionState !== 'CONNECTED')
+                        }
                         onClick={() => void disconnectAccount(account.id)}
                       >
                         Disconnect
@@ -1284,6 +1422,317 @@ export function App() {
                 )}
               </aside>
             </div>
+          </section>
+        ) : null}
+
+        {busy !== 'startup' && section === 'settings' ? (
+          <section>
+            <div className="section-heading">
+              <div>
+                <h2>Settings</h2>
+                <p>Application behavior, diagnostics, and catalog recovery.</p>
+              </div>
+            </div>
+            <div className="settings-grid">
+              <article className="settings-card">
+                <p className="eyebrow">Disaster recovery</p>
+                <h3>Restore a lost catalog</h3>
+                <p>
+                  Rebuild channels, media, playlists, destinations, and verified copy history from
+                  local backups, Google Drive, or both.
+                </p>
+                <button className="button button--primary" onClick={() => void openRecovery()}>
+                  Open recovery
+                </button>
+              </article>
+              <article className="settings-card">
+                <p className="eyebrow">Privacy boundary</p>
+                <h3>Read-only source access</h3>
+                <p>
+                  Recovery never invokes yt-dlp, requests YouTube write access, imports credentials,
+                  or changes backup files.
+                </p>
+                <button className="button button--secondary" onClick={() => void openLogFolder()}>
+                  Open diagnostic logs
+                </button>
+              </article>
+            </div>
+          </section>
+        ) : null}
+
+        {busy !== 'startup' && section === 'recovery' ? (
+          <section>
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Settings / Disaster recovery</p>
+                <h2>Restore backup catalog</h2>
+                <p>
+                  Fast scanning reads manifests, sidecars, filesystem metadata, and app-owned Drive
+                  metadata only. Media bytes are not downloaded or rehashed during discovery.
+                </p>
+              </div>
+              <button className="button button--secondary" onClick={() => setSection('settings')}>
+                Back to settings
+              </button>
+            </div>
+            {recovery === null ? (
+              <div className="loading-panel">Preparing a recovery session…</div>
+            ) : (
+              <div className="recovery-layout">
+                <article className="recovery-panel">
+                  <div className="recovery-panel__head">
+                    <div>
+                      <p className="eyebrow">1. Sources</p>
+                      <h3>Select backup locations</h3>
+                    </div>
+                    <StatePill
+                      tone={
+                        ['COMPLETED', 'COMPLETED_WITH_WARNINGS'].includes(recovery.status)
+                          ? 'success'
+                          : recovery.status === 'FAILED'
+                            ? 'danger'
+                            : ['SCANNING', 'IMPORTING'].includes(recovery.status)
+                              ? 'warning'
+                              : 'neutral'
+                      }
+                    >
+                      {recovery.status.replaceAll('_', ' ')}
+                    </StatePill>
+                  </div>
+                  <div className="recovery-actions">
+                    <button
+                      className="button button--primary"
+                      disabled={
+                        busy !== null || ['SCANNING', 'IMPORTING'].includes(recovery.status)
+                      }
+                      onClick={() => void addRecoveryLocalSource()}
+                    >
+                      Add local backup folder…
+                    </button>
+                    {accounts
+                      .filter(
+                        (account) =>
+                          account.capabilities.driveConnectionState === 'CONNECTED' &&
+                          !recovery.sources.some(
+                            (source) =>
+                              source.sourceType === 'GOOGLE_DRIVE' &&
+                              source.accountId === account.id,
+                          ),
+                      )
+                      .map((account) => (
+                        <button
+                          className="button button--secondary"
+                          disabled={
+                            busy !== null || ['SCANNING', 'IMPORTING'].includes(recovery.status)
+                          }
+                          key={account.id}
+                          onClick={() => void addRecoveryDriveSource(account.id)}
+                        >
+                          Add Drive · {account.email ?? account.displayName ?? 'Google account'}
+                        </button>
+                      ))}
+                    <button
+                      className="button button--secondary"
+                      disabled={busy !== null || oauthFlow?.status === 'PENDING'}
+                      onClick={() => void connectGoogle(null, 'GOOGLE_DRIVE')}
+                    >
+                      Authorize another Drive account
+                    </button>
+                  </div>
+                  {recovery.sources.length === 0 ? (
+                    <EmptyState
+                      title="No recovery sources"
+                      detail="Choose one or more local backup roots, Google Drive accounts, or both."
+                    />
+                  ) : (
+                    <div className="recovery-sources">
+                      {recovery.sources.map((source) => (
+                        <div key={source.id}>
+                          <span>
+                            <strong>{source.label}</strong>
+                            <small>
+                              {source.sourceType === 'FILESYSTEM'
+                                ? 'Local filesystem'
+                                : 'Google Drive'}
+                              {source.discoveredRootCount > 0
+                                ? ` · ${source.discoveredRootCount} backup root${source.discoveredRootCount === 1 ? '' : 's'}`
+                                : ''}
+                            </small>
+                          </span>
+                          <StatePill
+                            tone={
+                              source.status === 'FAILED'
+                                ? 'danger'
+                                : source.status === 'SCANNED'
+                                  ? 'success'
+                                  : 'neutral'
+                            }
+                          >
+                            {source.status}
+                          </StatePill>
+                          {source.driveRoots.length === 0 ? null : (
+                            <div className="recovery-roots">
+                              {source.driveRoots.map((root) => (
+                                <label key={root.providerRootId}>
+                                  <input
+                                    type="checkbox"
+                                    checked={root.selected}
+                                    disabled={['SCANNING', 'IMPORTING'].includes(recovery.status)}
+                                    onChange={(event) => {
+                                      void window.ytbm
+                                        .setRecoveryDriveRootSelected({
+                                          sessionId: recovery.id,
+                                          sourceId: source.id,
+                                          providerRootId: root.providerRootId,
+                                          selected: event.currentTarget.checked,
+                                        })
+                                        .then((session) => {
+                                          setRecovery(session);
+                                          setNotice(
+                                            'Drive root selection changed. Scan again to refresh the preview.',
+                                          );
+                                        })
+                                        .catch((caught: unknown) => setError(safeMessage(caught)));
+                                    }}
+                                  />
+                                  <span>
+                                    <strong>{root.name}</strong>
+                                    <small>{root.providerRootId}</small>
+                                  </span>
+                                </label>
+                              ))}
+                            </div>
+                          )}
+                          {source.safeMessage === null ? null : <small>{source.safeMessage}</small>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="recovery-actions recovery-actions--footer">
+                    <button
+                      className="button button--primary"
+                      disabled={
+                        recovery.sources.length === 0 ||
+                        ['SCANNING', 'IMPORTING'].includes(recovery.status)
+                      }
+                      onClick={() => void scanRecovery()}
+                    >
+                      {recovery.status === 'READY_FOR_REVIEW' ? 'Scan again' : 'Scan sources'}
+                    </button>
+                    {['SCANNING', 'IMPORTING'].includes(recovery.status) ? (
+                      <button
+                        className="button button--danger"
+                        onClick={() => void window.ytbm.cancelRecovery(recovery.id)}
+                      >
+                        Cancel safely
+                      </button>
+                    ) : null}
+                  </div>
+                  {recovery.progress === null ? null : (
+                    <div className="recovery-progress">
+                      <div className="progress">
+                        <span
+                          style={{
+                            width:
+                              recovery.progress.total === null || recovery.progress.total === 0
+                                ? '20%'
+                                : `${Math.min(100, Math.round((recovery.progress.processed / recovery.progress.total) * 100))}%`,
+                          }}
+                        />
+                      </div>
+                      <small>
+                        {recovery.progress.phase.replaceAll('_', ' ')} ·{' '}
+                        {recovery.progress.processed.toLocaleString()}
+                        {recovery.progress.total === null
+                          ? ' processed'
+                          : ` / ${recovery.progress.total.toLocaleString()}`}
+                      </small>
+                    </div>
+                  )}
+                </article>
+
+                <article className="recovery-panel">
+                  <p className="eyebrow">2. Preview and restore</p>
+                  <h3>Recovered catalog preview</h3>
+                  <div className="recovery-counts">
+                    <div>
+                      <strong>{recovery.counts.channels}</strong>
+                      <span>Channels</span>
+                    </div>
+                    <div>
+                      <strong>{recovery.counts.media}</strong>
+                      <span>Media</span>
+                    </div>
+                    <div>
+                      <strong>{recovery.counts.playlists}</strong>
+                      <span>Playlists</span>
+                    </div>
+                    <div>
+                      <strong>{recovery.counts.localCopies}</strong>
+                      <span>Local copies</span>
+                    </div>
+                    <div>
+                      <strong>{recovery.counts.driveCopies}</strong>
+                      <span>Drive copies</span>
+                    </div>
+                    <div>
+                      <strong>{recovery.counts.warnings}</strong>
+                      <span>Warnings</span>
+                    </div>
+                  </div>
+                  {recovery.safeMessage === null ? null : (
+                    <p className="card-error">{recovery.safeMessage}</p>
+                  )}
+                  {recovery.warnings.length > 0 ? (
+                    <details
+                      className="recovery-warnings"
+                      open={recovery.status === 'READY_FOR_REVIEW'}
+                    >
+                      <summary>Review {recovery.counts.warnings} recovery warnings</summary>
+                      <ul>
+                        {recovery.warnings.map((warning) => (
+                          <li key={warning.id}>
+                            <strong>{warning.code.replaceAll('_', ' ')}</strong>
+                            <span>{warning.safeMessage}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  ) : null}
+                  {recovery.status === 'READY_FOR_REVIEW' ? (
+                    <button
+                      className="button button--primary"
+                      onClick={() => void importRecovery()}
+                    >
+                      Confirm and restore catalog
+                    </button>
+                  ) : null}
+                  {['COMPLETED', 'COMPLETED_WITH_WARNINGS'].includes(recovery.status) ? (
+                    <div className="recovery-complete">
+                      <strong>Catalog restore complete</strong>
+                      <p>
+                        Stable provider identities were merged and the search index was rebuilt.
+                        Backup files and YouTube were not changed.
+                      </p>
+                      <div className="section-actions">
+                        <button
+                          className="button button--primary"
+                          onClick={() => setSection('library')}
+                        >
+                          Open library
+                        </button>
+                        <button
+                          className="button button--secondary"
+                          onClick={() => void openRecovery(true)}
+                        >
+                          Start another recovery
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </article>
+              </div>
+            )}
           </section>
         ) : null}
 
