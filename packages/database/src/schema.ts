@@ -187,14 +187,47 @@ export const destinations = sqliteTable(
 
 export const schedules = sqliteTable('schedules', {
   id: text('id').primaryKey(),
+  operationKind: text('operation_kind').notNull().default('BACKUP'),
+  channelId: text('channel_id').references(() => channels.id, { onDelete: 'cascade' }),
   scheduleType: text('schedule_type').notNull(),
   configJson: text('config_json').notNull(),
   enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  catchUp: integer('catch_up', { mode: 'boolean' }).notNull().default(true),
+  backupOnStartup: integer('backup_on_startup', { mode: 'boolean' }).notNull().default(false),
+  timezone: text('timezone').notNull().default('Etc/UTC'),
   windowsTaskId: text('windows_task_id'),
+  taskStatus: text('task_status').notNull().default('PENDING'),
+  lastErrorSafe: text('last_error_safe'),
+  lastReconciledAt: integer('last_reconciled_at'),
   lastTriggeredAt: integer('last_triggered_at'),
   nextExpectedAt: integer('next_expected_at'),
   ...timestamps(),
 });
+
+export const scheduleTriggers = sqliteTable(
+  'schedule_triggers',
+  {
+    id: text('id').primaryKey(),
+    scheduleId: text('schedule_id')
+      .notNull()
+      .references(() => schedules.id, { onDelete: 'cascade' }),
+    logicalTriggerAt: integer('logical_trigger_at').notNull(),
+    requestedAt: integer('requested_at').notNull(),
+    triggerSource: text('trigger_source').notNull(),
+    status: text('status').notNull(),
+    runIdsJson: text('run_ids_json').notNull().default('[]'),
+    safeMessage: text('safe_message'),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('schedule_triggers_schedule_logical_uidx').on(
+      table.scheduleId,
+      table.logicalTriggerAt,
+    ),
+    index('schedule_triggers_schedule_created_idx').on(table.scheduleId, table.createdAt),
+  ],
+);
 
 export const globalBackupSettings = sqliteTable(
   'global_backup_settings',
@@ -820,11 +853,14 @@ export const integrityChecks = sqliteTable(
   'integrity_checks',
   {
     id: text('id').primaryKey(),
+    backupRunId: text('backup_run_id').references(() => backupRuns.id, { onDelete: 'set null' }),
+    jobId: text('job_id').references(() => jobs.id, { onDelete: 'set null' }),
     mediaCopyId: text('media_copy_id').references(() => mediaCopies.id),
     mediaArtifactId: text('media_artifact_id').references(() => mediaArtifacts.id),
     destinationId: text('destination_id')
       .notNull()
       .references(() => destinations.id),
+    verificationStrength: text('verification_strength').notNull().default('LOCAL_SHA256'),
     expectedSha256: text('expected_sha256'),
     actualSha256: text('actual_sha256'),
     expectedBytes: integer('expected_bytes'),
@@ -839,10 +875,29 @@ export const integrityChecks = sqliteTable(
   (table) => [
     index('integrity_checks_destination_created_idx').on(table.destinationId, table.createdAt),
     index('integrity_checks_copy_created_idx').on(table.mediaCopyId, table.createdAt),
+    index('integrity_checks_run_idx').on(table.backupRunId, table.createdAt),
     check(
       'integrity_checks_one_target_check',
       sql`(${table.mediaCopyId} is not null) <> (${table.mediaArtifactId} is not null)`,
     ),
+  ],
+);
+
+export const notificationEvents = sqliteTable(
+  'notification_events',
+  {
+    id: text('id').primaryKey(),
+    category: text('category').notNull(),
+    dedupKey: text('dedup_key').notNull(),
+    title: text('title').notNull(),
+    body: text('body').notNull(),
+    routeJson: text('route_json').notNull(),
+    deliveredAt: integer('delivered_at'),
+    createdAt: integer('created_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('notification_events_dedup_uidx').on(table.dedupKey),
+    index('notification_events_pending_idx').on(table.deliveredAt, table.createdAt),
   ],
 );
 

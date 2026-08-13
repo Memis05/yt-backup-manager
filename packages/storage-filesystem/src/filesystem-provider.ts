@@ -1,6 +1,16 @@
 import { constants } from 'node:fs';
 import { Buffer } from 'node:buffer';
-import { access, link, mkdir, open, realpath, stat, statfs, unlink } from 'node:fs/promises';
+import {
+  access,
+  link,
+  mkdir,
+  open,
+  realpath,
+  rename,
+  stat,
+  statfs,
+  unlink,
+} from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
@@ -221,6 +231,14 @@ export class FilesystemStorageProvider implements StorageProvider {
   }
 
   public async putFile(input: PutFileInput): Promise<PutFileResult> {
+    return this.writeFile(input, false);
+  }
+
+  public async replaceFile(input: PutFileInput): Promise<PutFileResult> {
+    return this.writeFile(input, true);
+  }
+
+  private async writeFile(input: PutFileInput, replaceUnhealthy: boolean): Promise<PutFileResult> {
     const probe = await this.probe(input.destination);
     const unavailable = destinationAvailabilityError(
       probe.availability,
@@ -273,11 +291,13 @@ export class FilesystemStorageProvider implements StorageProvider {
           reconciled: true,
         };
       }
-      throw new BackupOperationError(
-        'COPY_CORRUPT',
-        'A different file already exists at the planned backup path. It was not overwritten.',
-        { disposition: 'FAIL' },
-      );
+      if (!replaceUnhealthy) {
+        throw new BackupOperationError(
+          'COPY_CORRUPT',
+          'A different file already exists at the planned backup path. It was not overwritten.',
+          { disposition: 'FAIL' },
+        );
+      }
     }
 
     const temporaryPath = join(
@@ -309,7 +329,29 @@ export class FilesystemStorageProvider implements StorageProvider {
     try {
       await this.assertDestinationIdentity(input.destination, currentRoot);
       await assertPathPhysicallyUnderRoot(currentRoot, dirname(finalPath), { allowRoot: true });
-      await promoteFileNoReplace(temporaryPath, finalPath);
+      if (replaceUnhealthy && (await this.pathExists(finalPath))) {
+        const quarantinePath = join(
+          dirname(finalPath),
+          `.${basename(finalPath)}.${crypto.randomUUID()}.ytbm-damaged`,
+        );
+        await rename(finalPath, quarantinePath);
+        try {
+          await rename(temporaryPath, finalPath);
+          const promoted = await verifyFileSha256(
+            finalPath,
+            input.expectedSha256,
+            input.expectedBytes,
+          );
+          if (!promoted.verified) throw new Error('Promoted repair failed verification');
+          await unlink(quarantinePath).catch(() => undefined);
+        } catch (error) {
+          if (await this.pathExists(finalPath)) await unlink(finalPath).catch(() => undefined);
+          await rename(quarantinePath, finalPath).catch(() => undefined);
+          throw error;
+        }
+      } else {
+        await promoteFileNoReplace(temporaryPath, finalPath);
+      }
       await assertPathPhysicallyUnderRoot(currentRoot, finalPath);
       await this.assertDestinationIdentity(input.destination, currentRoot);
     } catch (error) {

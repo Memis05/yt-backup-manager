@@ -22,6 +22,10 @@ import type {
   SourceStatus,
   SourceSyncJobDto,
   ToolDiagnostics,
+  IntegrityOverview,
+  IntegrityScope,
+  ScheduleDto,
+  ScheduleFrequency,
   GoogleOAuthCapability,
 } from '@ytbm/core';
 
@@ -34,6 +38,7 @@ type Section =
   | 'backup'
   | 'queue'
   | 'storage'
+  | 'integrity'
   | 'settings'
   | 'recovery';
 type LibraryView = 'grid' | 'list';
@@ -67,6 +72,7 @@ const NAVIGATION: Array<{ id: Section; label: string }> = [
   { id: 'backup', label: 'Backup' },
   { id: 'queue', label: 'Queue' },
   { id: 'storage', label: 'Storage' },
+  { id: 'integrity', label: 'Integrity' },
   { id: 'settings', label: 'Settings' },
 ];
 
@@ -82,6 +88,17 @@ const QUALITY_OPTIONS: Array<{ value: QualityProfile; label: string }> = [
   { value: 'MAX_1080P', label: 'Up to 1080p' },
   { value: 'MAX_720P', label: 'Up to 720p' },
 ];
+
+const NOTIFICATION_OPTIONS = [
+  ['backupComplete', 'Successful backups'],
+  ['backupErrors', 'Backups completed with errors or failed'],
+  ['destinationDisconnected', 'Destination disconnected'],
+  ['destinationReconnected', 'Destination reconnected'],
+  ['authenticationRequired', 'Google Drive authorization required'],
+  ['integrityProblems', 'Missing or corrupt backup copies'],
+  ['repairResults', 'Repair completed or failed'],
+  ['scheduleErrors', 'Automatic schedule errors'],
+] as const;
 
 function safeMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'The operation could not be completed.';
@@ -203,6 +220,17 @@ export function App() {
   const [toolDiagnostics, setToolDiagnostics] = useState<ToolDiagnostics | null>(null);
   const [dashboard, setDashboard] = useState<DashboardSummary | null>(null);
   const [recovery, setRecovery] = useState<RecoverySessionDto | null>(null);
+  const [schedules, setSchedules] = useState<ScheduleDto[]>([]);
+  const [integrity, setIntegrity] = useState<IntegrityOverview | null>(null);
+  const [integrityScope, setIntegrityScope] = useState('ALL');
+  const [scheduleScope, setScheduleScope] = useState<string>('GLOBAL');
+  const [scheduleFrequency, setScheduleFrequency] = useState<ScheduleFrequency>('DAILY');
+  const [scheduleTime, setScheduleTime] = useState('02:00');
+  const [scheduleWeekday, setScheduleWeekday] = useState(1);
+  const [scheduleEveryHours, setScheduleEveryHours] = useState(6);
+  const [scheduleCatchUp, setScheduleCatchUp] = useState(true);
+  const [scheduleStartup, setScheduleStartup] = useState(false);
+  const [scheduleEnabled, setScheduleEnabled] = useState(true);
 
   const [libraryView, setLibraryView] = useState<LibraryView>('grid');
   const [librarySearch, setLibrarySearch] = useState('');
@@ -250,6 +278,12 @@ export function App() {
     setDestinations(destinationItems);
     setToolDiagnostics(tools);
     setDashboard(summary);
+  }, []);
+
+  useEffect(() => {
+    return window.ytbm.onInternalRoute((route) => {
+      setSection(route.section);
+    });
   }, []);
 
   useEffect(() => {
@@ -425,6 +459,35 @@ export function App() {
     }, 750);
     return () => window.clearInterval(timer);
   }, [section, recovery, refreshCore]);
+
+  useEffect(() => {
+    if (section !== 'settings') return;
+    void window.ytbm
+      .listSchedules()
+      .then(setSchedules)
+      .catch((caught: unknown) => setError(safeMessage(caught)));
+  }, [section]);
+
+  useEffect(() => {
+    if (section !== 'integrity') return;
+    let active = true;
+    const refresh = (): void => {
+      void window.ytbm
+        .getIntegrityOverview()
+        .then((value) => {
+          if (active) setIntegrity(value);
+        })
+        .catch((caught: unknown) => {
+          if (active) setError(safeMessage(caught));
+        });
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 2_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [section]);
 
   const selectedChannels = useMemo(
     () => channels.filter((channel) => channel.backupEnabled),
@@ -747,6 +810,105 @@ export function App() {
     setError(null);
     try {
       setRecovery(await window.ytbm.startRecoveryImport(recovery.id));
+    } catch (caught) {
+      setError(safeMessage(caught));
+    }
+  };
+
+  const saveApplicationSettings = async (
+    patch: Parameters<typeof window.ytbm.updateSettings>[0],
+  ): Promise<void> => {
+    setError(null);
+    try {
+      const settings = await window.ytbm.updateSettings(patch);
+      setFoundation((current) => (current === null ? current : { ...current, settings }));
+      setNotice('Settings saved.');
+    } catch (caught) {
+      setError(safeMessage(caught));
+    }
+  };
+
+  const saveSchedule = async (): Promise<void> => {
+    setError(null);
+    const channelId = scheduleScope === 'GLOBAL' ? null : scheduleScope;
+    const existing = schedules.find((schedule) => schedule.channelId === channelId) ?? null;
+    try {
+      await window.ytbm.upsertSchedule({
+        id: existing?.id ?? null,
+        channelId,
+        enabled: scheduleEnabled,
+        frequency: scheduleFrequency,
+        localTime: scheduleTime,
+        weekday: scheduleFrequency === 'WEEKLY' ? scheduleWeekday : null,
+        everyHours: scheduleFrequency === 'EVERY_N_HOURS' ? scheduleEveryHours : null,
+        catchUp: scheduleCatchUp,
+        backupOnStartup: scheduleStartup,
+      });
+      setSchedules(await window.ytbm.listSchedules());
+      setNotice('Automatic backup schedule reconciled.');
+    } catch (caught) {
+      setError(safeMessage(caught));
+    }
+  };
+
+  const editScheduleScope = (value: string): void => {
+    setScheduleScope(value);
+    const channelId = value === 'GLOBAL' ? null : value;
+    const schedule = schedules.find((item) => item.channelId === channelId);
+    if (schedule === undefined) return;
+    setScheduleFrequency(schedule.frequency);
+    setScheduleTime(schedule.localTime);
+    setScheduleWeekday(schedule.weekday ?? 1);
+    setScheduleEveryHours(schedule.everyHours ?? 6);
+    setScheduleCatchUp(schedule.catchUp);
+    setScheduleStartup(schedule.backupOnStartup);
+    setScheduleEnabled(schedule.enabled);
+  };
+
+  const startIntegrity = async (
+    driveMode: 'PROVIDER_METADATA_SIZE' | 'DOWNLOADED_SHA256' = 'PROVIDER_METADATA_SIZE',
+    scopeOverride?: IntegrityScope,
+  ): Promise<void> => {
+    setError(null);
+    try {
+      const [kind, id] = integrityScope.split(':', 2);
+      const scope: IntegrityScope =
+        scopeOverride ??
+        (kind === 'CHANNEL' && id !== undefined
+          ? { kind: 'CHANNEL', id }
+          : kind === 'DESTINATION' && id !== undefined
+            ? { kind: 'DESTINATION', id }
+            : { kind: 'ALL' });
+      const result = await window.ytbm.startIntegrity({ scope, driveMode });
+      setNotice(`Integrity verification queued for ${result.plannedChecks} copies.`);
+      if (scopeOverride !== undefined) setMediaDetails(null);
+      setSection('queue');
+      setQueueSection('ACTIVE');
+    } catch (caught) {
+      setError(safeMessage(caught));
+    }
+  };
+
+  const repairCopy = async (copyId: string, youtubeFallbackAvailable: boolean): Promise<void> => {
+    setError(null);
+    try {
+      const issue = integrity?.issues.find((item) => item.copyId === copyId);
+      const needsYoutube = (issue?.repairSources.length ?? 0) === 0;
+      const allowYoutubeFallback =
+        needsYoutube && youtubeFallbackAvailable
+          ? window.confirm(
+              'No healthy archived copy is available. Download this media from YouTube as the last repair source?',
+            )
+          : false;
+      if (needsYoutube && !allowYoutubeFallback) return;
+      const result = await window.ytbm.startRepair(copyId, allowYoutubeFallback);
+      setNotice(
+        result.source === 'ALREADY_HEALTHY'
+          ? 'The copy is already healthy.'
+          : `Repair queued from ${result.source === 'GOOGLE_DRIVE' ? 'Google Drive' : result.source.toLowerCase()}.`,
+      );
+      setSection('queue');
+      setQueueSection('ACTIVE');
     } catch (caught) {
       setError(safeMessage(caught));
     }
@@ -1425,6 +1587,239 @@ export function App() {
           </section>
         ) : null}
 
+        {busy !== 'startup' && section === 'integrity' ? (
+          <section>
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Integrity / Repair Center</p>
+                <h2>Backup health and repair</h2>
+                <p>
+                  Health describes actual copies across configured destinations. It is not a
+                  protection policy.
+                </p>
+              </div>
+              <div className="section-actions">
+                <select
+                  value={integrityScope}
+                  onChange={(event) => setIntegrityScope(event.target.value)}
+                  aria-label="Integrity verification scope"
+                >
+                  <option value="ALL">All configured copies</option>
+                  {selectedChannels.map((channel) => (
+                    <option key={channel.id} value={`CHANNEL:${channel.id}`}>
+                      Channel: {channel.title}
+                    </option>
+                  ))}
+                  {destinations.map((destination) => (
+                    <option key={destination.id} value={`DESTINATION:${destination.id}`}>
+                      Destination: {destinationLabel(destination)}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  className="button button--secondary"
+                  onClick={() => void startIntegrity('PROVIDER_METADATA_SIZE')}
+                >
+                  Verify selected scope
+                </button>
+                <button
+                  className="button button--primary"
+                  onClick={() => void startIntegrity('DOWNLOADED_SHA256')}
+                >
+                  Full Drive SHA-256
+                </button>
+              </div>
+            </div>
+            {integrity === null ? (
+              <div className="loading-panel">Loading integrity state…</div>
+            ) : (
+              <>
+                <div className="stats-grid">
+                  <article>
+                    <strong>{integrity.health.complete}</strong>
+                    <span>Complete</span>
+                  </article>
+                  <article>
+                    <strong>{integrity.health.partial}</strong>
+                    <span>Partial</span>
+                  </article>
+                  <article>
+                    <strong>{integrity.health.pending}</strong>
+                    <span>Pending</span>
+                  </article>
+                  <article>
+                    <strong>{integrity.health.missing}</strong>
+                    <span>Missing</span>
+                  </article>
+                  <article>
+                    <strong>{integrity.health.corrupt}</strong>
+                    <span>Corrupt</span>
+                  </article>
+                  <article>
+                    <strong>{integrity.health.unavailable + integrity.health.authRequired}</strong>
+                    <span>Unavailable / auth</span>
+                  </article>
+                </div>
+                <article className="panel">
+                  <div className="section-heading">
+                    <div>
+                      <h3>Channel health</h3>
+                      <p>Media counts are grouped by their current descriptive health.</p>
+                    </div>
+                  </div>
+                  {integrity.channels.length === 0 ? (
+                    <EmptyState
+                      title="No configured backup coverage"
+                      detail="Choose destinations for a managed channel to establish intended copies."
+                    />
+                  ) : (
+                    <div className="history-list">
+                      {integrity.channels.map((channel) => (
+                        <div className="history-row" key={channel.channelId}>
+                          <strong>{channel.channelTitle}</strong>
+                          <span>
+                            <strong>{channel.health.complete}</strong>
+                            <small>complete</small>
+                          </span>
+                          <span>
+                            <strong>
+                              {channel.health.partial +
+                                channel.health.pending +
+                                channel.health.missing +
+                                channel.health.corrupt +
+                                channel.health.unavailable +
+                                channel.health.authRequired}
+                            </strong>
+                            <small>need attention or pending</small>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </article>
+                <article className="panel">
+                  <div className="section-heading">
+                    <div>
+                      <h3>Issues</h3>
+                      <p>Only catalog-authorized copy IDs are accepted for repair.</p>
+                    </div>
+                  </div>
+                  {integrity.issues.length === 0 ? (
+                    <EmptyState
+                      title="No integrity issues"
+                      detail="Run verification to refresh current copy health."
+                    />
+                  ) : (
+                    <div className="issue-list">
+                      {integrity.issues.map((issue) => (
+                        <div className="issue-row" key={issue.copyId}>
+                          <span>
+                            <strong>{issue.mediaTitle}</strong>
+                            <small>
+                              {issue.channelTitle} · {issue.destinationType.replace('_', ' ')}
+                            </small>
+                            <small>{issue.safeMessage}</small>
+                          </span>
+                          <StatePill
+                            tone={
+                              issue.health === 'CORRUPT' || issue.health === 'MISSING'
+                                ? 'danger'
+                                : 'warning'
+                            }
+                          >
+                            {issue.health.replace('_', ' ')}
+                          </StatePill>
+                          <span>
+                            <small>
+                              {issue.repairSources.length > 0
+                                ? `${issue.repairSources.length} healthy archive source(s)`
+                                : issue.youtubeFallbackAvailable
+                                  ? 'YouTube fallback only'
+                                  : 'No repair source'}
+                            </small>
+                          </span>
+                          <div className="queue-actions">
+                            <button
+                              className="button button--secondary"
+                              onClick={() =>
+                                void window.ytbm
+                                  .startIntegrity({
+                                    scope: { kind: 'COPY', id: issue.copyId },
+                                    driveMode: 'PROVIDER_METADATA_SIZE',
+                                  })
+                                  .then(() => setNotice('Verification queued.'))
+                                  .catch((caught: unknown) => setError(safeMessage(caught)))
+                              }
+                            >
+                              Verify again
+                            </button>
+                            <button
+                              className="button button--primary"
+                              disabled={
+                                issue.health === 'AUTH_REQUIRED' ||
+                                issue.health === 'UNAVAILABLE' ||
+                                (issue.repairSources.length === 0 &&
+                                  !issue.youtubeFallbackAvailable)
+                              }
+                              onClick={() =>
+                                void repairCopy(issue.copyId, issue.youtubeFallbackAvailable)
+                              }
+                            >
+                              Repair
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </article>
+                <article className="panel">
+                  <div className="section-heading">
+                    <div>
+                      <h3>Verification history</h3>
+                      <p>
+                        Drive metadata checks and downloaded SHA-256 checks are labeled separately.
+                      </p>
+                    </div>
+                  </div>
+                  {integrity.history.length === 0 ? (
+                    <EmptyState
+                      title="No verification history"
+                      detail="Choose Verify all or verify an individual copy."
+                    />
+                  ) : (
+                    <div className="history-list">
+                      {integrity.history.map((check) => (
+                        <div className="history-row" key={check.id}>
+                          <span>
+                            <strong>{check.mediaTitle}</strong>
+                            <small>{check.destinationType.replace('_', ' ')}</small>
+                          </span>
+                          <StatePill
+                            tone={
+                              check.result === 'VERIFIED'
+                                ? 'success'
+                                : check.result === 'PENDING'
+                                  ? 'warning'
+                                  : 'danger'
+                            }
+                          >
+                            {check.result}
+                          </StatePill>
+                          <span>
+                            <strong>{check.verificationStrength.replaceAll('_', ' ')}</strong>
+                            <small>{formatDate(check.completedAt ?? check.startedAt)}</small>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </article>
+              </>
+            )}
+          </section>
+        ) : null}
+
         {busy !== 'startup' && section === 'settings' ? (
           <section>
             <div className="section-heading">
@@ -1434,6 +1829,357 @@ export function App() {
               </div>
             </div>
             <div className="settings-grid">
+              <article className="settings-card settings-card--wide">
+                <p className="eyebrow">Windows and tray</p>
+                <h3>Background application behavior</h3>
+                <div className="settings-options">
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={foundation?.settings.startWithWindows ?? false}
+                      onChange={(event) =>
+                        void saveApplicationSettings({ startWithWindows: event.target.checked })
+                      }
+                    />
+                    Start YouTube Backup Manager with Windows
+                  </label>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={foundation?.settings.startMinimized ?? false}
+                      onChange={(event) =>
+                        void saveApplicationSettings({ startMinimized: event.target.checked })
+                      }
+                    />
+                    Start minimized to tray
+                  </label>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={foundation?.settings.keepRunningInTray ?? true}
+                      onChange={(event) =>
+                        void saveApplicationSettings({ keepRunningInTray: event.target.checked })
+                      }
+                    />
+                    Keep running in tray when the window closes
+                  </label>
+                </div>
+              </article>
+              <article className="settings-card settings-card--wide">
+                <p className="eyebrow">Backup schedule</p>
+                <h3>Automatic backup</h3>
+                <p>
+                  Times preserve local wall-clock intent. Windows applies timezone and DST rules; a
+                  skipped clock time follows Task Scheduler's Start when available behavior.
+                </p>
+                <div className="settings-form-grid">
+                  <label>
+                    Scope
+                    <select
+                      value={scheduleScope}
+                      onChange={(event) => editScheduleScope(event.target.value)}
+                    >
+                      <option value="GLOBAL">Global default</option>
+                      {selectedChannels.map((channel) => (
+                        <option key={channel.id} value={channel.id}>
+                          {channel.title} override
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    Frequency
+                    <select
+                      value={scheduleFrequency}
+                      onChange={(event) =>
+                        setScheduleFrequency(event.target.value as ScheduleFrequency)
+                      }
+                    >
+                      <option value="DAILY">Daily</option>
+                      <option value="WEEKLY">Weekly</option>
+                      <option value="EVERY_N_HOURS">Every N hours</option>
+                    </select>
+                  </label>
+                  <label>
+                    Local time
+                    <input
+                      type="time"
+                      value={scheduleTime}
+                      onChange={(event) => setScheduleTime(event.target.value)}
+                    />
+                  </label>
+                  {scheduleFrequency === 'WEEKLY' ? (
+                    <label>
+                      Weekday
+                      <select
+                        value={scheduleWeekday}
+                        onChange={(event) => setScheduleWeekday(Number(event.target.value))}
+                      >
+                        {[
+                          'Sunday',
+                          'Monday',
+                          'Tuesday',
+                          'Wednesday',
+                          'Thursday',
+                          'Friday',
+                          'Saturday',
+                        ].map((day, index) => (
+                          <option key={day} value={index}>
+                            {day}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
+                  {scheduleFrequency === 'EVERY_N_HOURS' ? (
+                    <label>
+                      Hours
+                      <input
+                        type="number"
+                        min="1"
+                        max="168"
+                        value={scheduleEveryHours}
+                        onChange={(event) => setScheduleEveryHours(Number(event.target.value))}
+                      />
+                    </label>
+                  ) : null}
+                </div>
+                <div className="settings-options">
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={scheduleEnabled}
+                      onChange={(event) => setScheduleEnabled(event.target.checked)}
+                    />
+                    Automatic backup enabled
+                  </label>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={scheduleCatchUp}
+                      onChange={(event) => setScheduleCatchUp(event.target.checked)}
+                    />
+                    Run one catch-up backup when the PC becomes available
+                  </label>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={scheduleStartup}
+                      onChange={(event) => setScheduleStartup(event.target.checked)}
+                    />
+                    Backup on application startup
+                  </label>
+                </div>
+                <button className="button button--primary" onClick={() => void saveSchedule()}>
+                  Save schedule
+                </button>
+                <div className="schedule-list">
+                  {schedules.map((schedule) => (
+                    <div key={schedule.id} className="schedule-row">
+                      <span>
+                        <strong>{schedule.channelTitle ?? 'Global default'}</strong>
+                        <small>
+                          {schedule.frequency.replaceAll('_', ' ')} · {schedule.localTime} ·{' '}
+                          {schedule.timezone}
+                        </small>
+                        <small>Next expected: {formatDate(schedule.nextExpectedAt)}</small>
+                        {schedule.lastErrorSafe === null ? null : (
+                          <small className="card-error">{schedule.lastErrorSafe}</small>
+                        )}
+                      </span>
+                      <StatePill
+                        tone={
+                          schedule.taskStatus === 'SYNCED'
+                            ? 'success'
+                            : schedule.taskStatus === 'ERROR'
+                              ? 'danger'
+                              : 'warning'
+                        }
+                      >
+                        {schedule.taskStatus}
+                      </StatePill>
+                      <button
+                        className="button button--danger"
+                        onClick={() =>
+                          void window.ytbm
+                            .removeSchedule(schedule.id)
+                            .then(async () => setSchedules(await window.ytbm.listSchedules()))
+                            .catch((caught: unknown) => setError(safeMessage(caught)))
+                        }
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </article>
+              <article className="settings-card settings-card--wide">
+                <p className="eyebrow">Integrity</p>
+                <h3>Periodic verification</h3>
+                {foundation !== null ? (
+                  <div className="settings-form-grid">
+                    <label>
+                      Frequency
+                      <select
+                        value={foundation.settings.periodicIntegrity.frequency}
+                        onChange={(event) =>
+                          void saveApplicationSettings({
+                            periodicIntegrity: {
+                              ...foundation.settings.periodicIntegrity,
+                              frequency: event.target.value as 'WEEKLY' | 'MONTHLY' | 'CUSTOM',
+                            },
+                          })
+                        }
+                      >
+                        <option value="WEEKLY">Weekly</option>
+                        <option value="MONTHLY">Monthly</option>
+                        <option value="CUSTOM">Custom</option>
+                      </select>
+                    </label>
+                    <label>
+                      Local start time
+                      <input
+                        type="time"
+                        value={foundation.settings.periodicIntegrity.localTime}
+                        onChange={(event) =>
+                          void saveApplicationSettings({
+                            periodicIntegrity: {
+                              ...foundation.settings.periodicIntegrity,
+                              localTime: event.target.value,
+                            },
+                          })
+                        }
+                      />
+                    </label>
+                    <label>
+                      Scope
+                      <select
+                        value={
+                          foundation.settings.periodicIntegrity.scope.kind === 'ALL'
+                            ? 'ALL'
+                            : `${foundation.settings.periodicIntegrity.scope.kind}:${foundation.settings.periodicIntegrity.scope.id}`
+                        }
+                        onChange={(event) => {
+                          const [kind, id] = event.target.value.split(':', 2);
+                          const scope: IntegrityScope =
+                            kind === 'CHANNEL' && id !== undefined
+                              ? { kind: 'CHANNEL', id }
+                              : kind === 'DESTINATION' && id !== undefined
+                                ? { kind: 'DESTINATION', id }
+                                : { kind: 'ALL' };
+                          void saveApplicationSettings({
+                            periodicIntegrity: {
+                              ...foundation.settings.periodicIntegrity,
+                              scope,
+                            },
+                          });
+                        }}
+                      >
+                        <option value="ALL">All configured copies</option>
+                        {selectedChannels.map((channel) => (
+                          <option key={channel.id} value={`CHANNEL:${channel.id}`}>
+                            Channel: {channel.title}
+                          </option>
+                        ))}
+                        {destinations.map((destination) => (
+                          <option key={destination.id} value={`DESTINATION:${destination.id}`}>
+                            Destination: {destinationLabel(destination)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {foundation.settings.periodicIntegrity.frequency === 'CUSTOM' ? (
+                      <label>
+                        Days
+                        <input
+                          type="number"
+                          min="1"
+                          max="365"
+                          value={foundation.settings.periodicIntegrity.customIntervalDays}
+                          onChange={(event) =>
+                            void saveApplicationSettings({
+                              periodicIntegrity: {
+                                ...foundation.settings.periodicIntegrity,
+                                customIntervalDays: Number(event.target.value),
+                              },
+                            })
+                          }
+                        />
+                      </label>
+                    ) : null}
+                  </div>
+                ) : null}
+                <div className="settings-options">
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={foundation?.settings.periodicIntegrity.enabled ?? false}
+                      onChange={(event) =>
+                        foundation !== null &&
+                        void saveApplicationSettings({
+                          periodicIntegrity: {
+                            ...foundation.settings.periodicIntegrity,
+                            enabled: event.target.checked,
+                          },
+                        })
+                      }
+                    />
+                    Enable lower-priority periodic integrity checks
+                  </label>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={
+                        foundation?.settings.periodicIntegrity.driveMode === 'DOWNLOADED_SHA256'
+                      }
+                      onChange={(event) =>
+                        foundation !== null &&
+                        void saveApplicationSettings({
+                          periodicIntegrity: {
+                            ...foundation.settings.periodicIntegrity,
+                            driveMode: event.target.checked
+                              ? 'DOWNLOADED_SHA256'
+                              : 'PROVIDER_METADATA_SIZE',
+                          },
+                        })
+                      }
+                    />
+                    Download full Drive content for SHA-256 (uses bandwidth and temporary disk)
+                  </label>
+                </div>
+                <button
+                  className="button button--secondary"
+                  onClick={() => setSection('integrity')}
+                >
+                  Open Integrity / Repair Center
+                </button>
+              </article>
+              <article className="settings-card settings-card--wide">
+                <p className="eyebrow">Windows notifications</p>
+                <h3>Notification categories</h3>
+                <p>Messages contain safe summaries and open a fixed in-app destination.</p>
+                <div className="settings-options">
+                  {foundation === null
+                    ? null
+                    : NOTIFICATION_OPTIONS.map(([key, label]) => (
+                        <label key={key}>
+                          <input
+                            type="checkbox"
+                            checked={foundation.settings.notifications[key]}
+                            onChange={(event) =>
+                              void saveApplicationSettings({
+                                notifications: {
+                                  ...foundation.settings.notifications,
+                                  [key]: event.target.checked,
+                                },
+                              })
+                            }
+                          />
+                          {label}
+                        </label>
+                      ))}
+                </div>
+              </article>
               <article className="settings-card">
                 <p className="eyebrow">Disaster recovery</p>
                 <h3>Restore a lost catalog</h3>
@@ -2225,6 +2971,9 @@ export function App() {
                         <div>
                           <strong>{job.mediaTitle ?? job.jobType.replaceAll('_', ' ')}</strong>
                           <small>
+                            {job.operationType === null
+                              ? ''
+                              : `${job.operationType.replaceAll('_', ' ')} · `}
                             {job.jobType.replaceAll('_', ' ')}
                             {job.destinationPath === null ? '' : ` · ${job.destinationPath}`}
                           </small>
@@ -2348,6 +3097,17 @@ export function App() {
               </button>
               <p className="eyebrow">Backup details</p>
               <h2>{mediaDetails.title}</h2>
+              <button
+                className="button button--secondary"
+                onClick={() =>
+                  void startIntegrity('PROVIDER_METADATA_SIZE', {
+                    kind: 'MEDIA',
+                    id: mediaDetails.mediaItemId,
+                  })
+                }
+              >
+                Verify all copies of this media
+              </button>
               {mediaDetails.copies.length === 0 ? (
                 <EmptyState
                   title="No destination copies"
@@ -2380,6 +3140,17 @@ export function App() {
                       )}
                       {copy.sha256 === null ? null : <code>{copy.sha256.slice(0, 16)}…</code>}
                     </div>
+                    <button
+                      className="button button--secondary"
+                      onClick={() =>
+                        void startIntegrity('PROVIDER_METADATA_SIZE', {
+                          kind: 'COPY',
+                          id: copy.id,
+                        })
+                      }
+                    >
+                      Verify copy
+                    </button>
                     {copy.destinationType === 'FILESYSTEM' &&
                     copy.status === 'VERIFIED' &&
                     copy.availabilityStatus === 'AVAILABLE' ? (

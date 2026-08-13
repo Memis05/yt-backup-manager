@@ -7,15 +7,29 @@ import {
   BackupStartResultSchema,
   ChannelBackupSettingsDtoSchema,
   DashboardSummarySchema,
+  IntegrityCheckDtoSchema,
+  IntegrityOverviewSchema,
+  IntegrityScopeSchema,
+  IntegrityStartResultSchema,
   MediaBackupDetailsSchema,
+  NotificationListResultSchema,
   QualityProfileSchema,
+  RepairStartResultSchema,
+  type BackupHealth,
   type BackupRunDto,
+  type BackupRunTrigger,
   type BackupStartResult,
   type ChannelBackupSettingsDto,
+  type AppSettings,
   type DashboardSummary,
+  type IntegrityOverview,
+  type IntegrityScope,
+  type IntegrityStartResult,
   type JobType,
   type MediaBackupDetails,
+  type NativeNotificationDto,
   type QualityProfile,
+  type RepairStartResult,
 } from '@ytbm/core';
 import type {
   GoogleDriveResumableState,
@@ -157,7 +171,7 @@ interface BackupRunRow {
   id: string;
   channel_id: string;
   channel_title: string;
-  trigger_type: 'MANUAL';
+  trigger_type: BackupRunTrigger;
   status: string;
   effective_config_json: string;
   discovered_count: number;
@@ -441,6 +455,7 @@ export class LocalBackupRepository {
     lastErrorCode: string | null,
   ): PersistedGoogleDriveDestination {
     const changedAt = this.now();
+    const previous = this.getGoogleDriveDestination(id);
     this.database.sqlite
       .prepare(
         `update destinations set availability_status = ?, last_probe_at = ?,
@@ -455,6 +470,32 @@ export class LocalBackupRepository {
         changedAt,
         id,
       );
+    if (previous.availabilityStatus !== availabilityStatus) {
+      if (availabilityStatus === 'AUTH_REQUIRED') {
+        this.enqueueNotification({
+          category: 'DRIVE_AUTH_REQUIRED',
+          dedupKey: `destination:${id}:auth-required`,
+          title: 'Google Drive authorization required',
+          body: 'Reconnect Google Drive to resume its backup operations.',
+          section: 'storage',
+          entityId: id,
+        });
+      } else if (availabilityStatus === 'AVAILABLE') {
+        this.database.sqlite
+          .prepare('delete from notification_events where dedup_key = ?')
+          .run(`destination:${id}:auth-required`);
+        if (previous.availabilityStatus !== 'UNKNOWN') {
+          this.enqueueNotification({
+            category: 'DESTINATION_RECONNECTED',
+            dedupKey: `destination:${id}:reconnected:${changedAt}`,
+            title: 'Google Drive reconnected',
+            body: 'Blocked Google Drive work can resume.',
+            section: 'storage',
+            entityId: id,
+          });
+        }
+      }
+    }
     return this.getGoogleDriveDestination(id);
   }
 
@@ -475,6 +516,7 @@ export class LocalBackupRepository {
     input: DestinationPersistenceInput,
   ): PersistedFilesystemDestination {
     const changedAt = this.now();
+    const previous = this.getDestination(id);
     this.database.sqlite
       .prepare(
         `update destinations set root_path = ?, volume_guid = coalesce(?, volume_guid),
@@ -495,6 +537,32 @@ export class LocalBackupRepository {
         changedAt,
         id,
       );
+    if (previous.availabilityStatus !== input.availabilityStatus) {
+      if (input.availabilityStatus === 'DISCONNECTED') {
+        this.enqueueNotification({
+          category: 'DESTINATION_DISCONNECTED',
+          dedupKey: `destination:${id}:disconnected`,
+          title: 'Backup destination disconnected',
+          body: 'Local work for this destination is waiting for the same volume to return.',
+          section: 'storage',
+          entityId: id,
+        });
+      } else if (input.availabilityStatus === 'AVAILABLE') {
+        this.database.sqlite
+          .prepare('delete from notification_events where dedup_key = ?')
+          .run(`destination:${id}:disconnected`);
+        if (previous.availabilityStatus !== 'UNKNOWN') {
+          this.enqueueNotification({
+            category: 'DESTINATION_RECONNECTED',
+            dedupKey: `destination:${id}:reconnected:${changedAt}`,
+            title: 'Backup destination reconnected',
+            body: 'Blocked local backup, integrity, and repair work can resume.',
+            section: 'storage',
+            entityId: id,
+          });
+        }
+      }
+    }
     return this.getDestination(id);
   }
 
@@ -592,10 +660,34 @@ export class LocalBackupRepository {
     channelId: string,
     defaultQualityProfile: QualityProfile,
     stagingRoot: string,
+    triggerType: Extract<
+      BackupRunTrigger,
+      'MANUAL' | 'CUSTOM_MANUAL' | 'SCHEDULED' | 'STARTUP'
+    > = 'MANUAL',
   ): BackupStartResult {
     const settings = this.getChannelSettings(channelId, defaultQualityProfile);
     if (settings.destinationIds.length === 0) {
       throw new Error('Select at least one effective backup destination before starting backup');
+    }
+    const active = this.database.sqlite
+      .prepare(
+        `select id from backup_runs where channel_id = ?
+         and trigger_type in ('MANUAL','CUSTOM_MANUAL','SCHEDULED','STARTUP')
+         and status in ('PENDING','RUNNING','PAUSED','INTERRUPTED')
+         order by created_at desc limit 1`,
+      )
+      .get(channelId) as { id: string } | undefined;
+    if (active !== undefined) {
+      const plannedJobs = (
+        this.database.sqlite
+          .prepare('select count(*) as count from jobs where backup_run_id = ?')
+          .get(active.id) as { count: number }
+      ).count;
+      return BackupStartResultSchema.parse({
+        run: this.getRun(active.id),
+        plannedJobs,
+        skippedVerifiedMedia: 0,
+      });
     }
     const channel = this.database.sqlite
       .prepare(
@@ -623,11 +715,12 @@ export class LocalBackupRepository {
           `insert into backup_runs (
             id, channel_id, trigger_type, status, effective_config_json, discovered_count,
             started_at, created_at, updated_at
-          ) values (?, ?, 'MANUAL', 'RUNNING', ?, ?, ?, ?, ?)`,
+          ) values (?, ?, ?, 'RUNNING', ?, ?, ?, ?, ?)`,
         )
         .run(
           runId,
           channelId,
+          triggerType,
           JSON.stringify(config),
           this.countChannelMedia(channelId),
           plannedAt,
@@ -1054,6 +1147,766 @@ export class LocalBackupRepository {
     });
   }
 
+  public planIntegrity(
+    scopeInput: IntegrityScope,
+    driveMode: 'PROVIDER_METADATA_SIZE' | 'DOWNLOADED_SHA256',
+  ): IntegrityStartResult {
+    const scope = IntegrityScopeSchema.parse(scopeInput);
+    const where =
+      scope.kind === 'COPY'
+        ? 'mc.id = ?'
+        : scope.kind === 'MEDIA'
+          ? 'mc.media_item_id = ?'
+          : scope.kind === 'CHANNEL'
+            ? 'mi.channel_id = ?'
+            : scope.kind === 'DESTINATION'
+              ? 'mc.destination_id = ?'
+              : '1 = 1';
+    const parameters = scope.kind === 'ALL' ? [] : [scope.id];
+    const copies = this.database.sqlite
+      .prepare(
+        `select mc.id, mc.media_item_id, mc.destination_id, mc.sha256, mc.bytes,
+          mi.channel_id, d.destination_type
+         from media_copies mc
+         join media_items mi on mi.id = mc.media_item_id
+         join destinations d on d.id = mc.destination_id
+         where d.enabled = 1 and ${where}
+         order by mc.id`,
+      )
+      .all(...parameters) as Array<{
+      id: string;
+      media_item_id: string;
+      destination_id: string;
+      sha256: string | null;
+      bytes: number | null;
+      channel_id: string;
+      destination_type: 'FILESYSTEM' | 'GOOGLE_DRIVE';
+    }>;
+    const runId = randomUUID();
+    const createdAt = this.now();
+    const config = {
+      qualityProfile: 'MAX_1080P',
+      destinationIds: [...new Set(copies.map((copy) => copy.destination_id))],
+      integrityScope: scope,
+      driveMode,
+    };
+    const transaction = this.database.sqlite.transaction(() => {
+      this.database.sqlite
+        .prepare(
+          `insert into backup_runs (
+            id, channel_id, trigger_type, status, effective_config_json, discovered_count,
+            started_at, completed_at, created_at, updated_at
+          ) values (?, ?, 'VERIFY', ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          runId,
+          copies[0]?.channel_id ?? null,
+          copies.length === 0 ? 'COMPLETED' : 'RUNNING',
+          JSON.stringify(config),
+          copies.length,
+          createdAt,
+          copies.length === 0 ? createdAt : null,
+          createdAt,
+          createdAt,
+        );
+      for (const copy of copies) {
+        const checkId = randomUUID();
+        const strength = copy.destination_type === 'FILESYSTEM' ? 'LOCAL_SHA256' : driveMode;
+        const jobId = this.insertJob({
+          backupRunId: runId,
+          channelId: copy.channel_id,
+          mediaItemId: copy.media_item_id,
+          destinationId: copy.destination_id,
+          jobType: 'VERIFY_EXISTING_COPY',
+          status: 'READY',
+          priority: 5,
+          payload: {
+            integrityCheckId: checkId,
+            mediaCopyId: copy.id,
+            verificationStrength: strength,
+          },
+          idempotencyKey: `integrity:${copy.id}:${strength}:run:${runId}`,
+        });
+        this.database.sqlite
+          .prepare(
+            `insert into integrity_checks (
+              id, backup_run_id, job_id, media_copy_id, destination_id,
+              verification_strength, expected_sha256, expected_bytes, result,
+              started_at, created_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?)`,
+          )
+          .run(
+            checkId,
+            runId,
+            jobId,
+            copy.id,
+            copy.destination_id,
+            strength,
+            copy.sha256,
+            copy.bytes,
+            createdAt,
+            createdAt,
+          );
+      }
+      this.insertActivity({
+        eventType: 'INTEGRITY_STARTED',
+        backupRunId: runId,
+        summary: `Integrity verification started for ${copies.length} backup copies.`,
+        createdAt,
+      });
+    });
+    transaction();
+    return IntegrityStartResultSchema.parse({ runId, plannedChecks: copies.length });
+  }
+
+  public completeIntegrityCheck(input: {
+    checkId: string;
+    copyId: string;
+    result: 'VERIFIED' | 'MISSING' | 'CORRUPT' | 'UNAVAILABLE' | 'ERROR';
+    verificationStrength: 'LOCAL_SHA256' | 'PROVIDER_METADATA_SIZE' | 'DOWNLOADED_SHA256';
+    actualSha256: string | null;
+    actualBytes: number | null;
+    errorCode: string | null;
+    safeMessage: string | null;
+  }): void {
+    const completedAt = this.now();
+    const copy = this.getMediaCopy(input.copyId);
+    const transaction = this.database.sqlite.transaction(() => {
+      this.database.sqlite
+        .prepare(
+          `update integrity_checks set actual_sha256 = ?, actual_bytes = ?, result = ?,
+            completed_at = ?, error_code = ?, error_message_safe = ? where id = ? and media_copy_id = ?`,
+        )
+        .run(
+          input.actualSha256,
+          input.actualBytes,
+          input.result,
+          completedAt,
+          input.errorCode,
+          input.safeMessage,
+          input.checkId,
+          input.copyId,
+        );
+      if (input.result === 'VERIFIED') {
+        this.database.sqlite
+          .prepare('delete from notification_events where dedup_key in (?, ?)')
+          .run(`integrity:${input.copyId}:MISSING`, `integrity:${input.copyId}:CORRUPT`);
+        this.database.sqlite
+          .prepare(
+            `update media_copies set status = 'VERIFIED', verification_strength = ?,
+              verified_at = ?, last_checked_at = ?, missing_since = null, corrupt_since = null,
+              last_error_code = null, last_error_at = null, updated_at = ? where id = ?`,
+          )
+          .run(input.verificationStrength, completedAt, completedAt, completedAt, input.copyId);
+      } else {
+        this.database.sqlite
+          .prepare(
+            `update media_copies set status = ?, last_checked_at = ?,
+              missing_since = case when ? = 'MISSING' then coalesce(missing_since, ?) else missing_since end,
+              corrupt_since = case when ? = 'CORRUPT' then coalesce(corrupt_since, ?) else corrupt_since end,
+              last_error_code = ?, last_error_at = ?, updated_at = ? where id = ?`,
+          )
+          .run(
+            input.result === 'ERROR' ? 'FAILED' : input.result,
+            completedAt,
+            input.result,
+            completedAt,
+            input.result,
+            completedAt,
+            input.errorCode,
+            completedAt,
+            completedAt,
+            input.copyId,
+          );
+      }
+      if (input.result !== 'VERIFIED') {
+        this.insertActivity({
+          eventType:
+            input.result === 'MISSING'
+              ? 'INTEGRITY_MISSING'
+              : input.result === 'CORRUPT'
+                ? 'INTEGRITY_CORRUPT'
+                : 'INTEGRITY_PROBLEM',
+          mediaItemId: copy.mediaItemId,
+          destinationId: copy.destinationId,
+          summary: input.safeMessage ?? 'A backup copy did not pass integrity verification.',
+          severity: ['MISSING', 'CORRUPT', 'ERROR'].includes(input.result) ? 'WARNING' : 'INFO',
+          details: { result: input.result, verificationStrength: input.verificationStrength },
+          createdAt: completedAt,
+        });
+      }
+      if (input.result === 'MISSING' || input.result === 'CORRUPT') {
+        this.enqueueNotification({
+          category: input.result === 'MISSING' ? 'INTEGRITY_MISSING' : 'INTEGRITY_CORRUPT',
+          dedupKey: `integrity:${input.copyId}:${input.result}`,
+          title: input.result === 'MISSING' ? 'Backup copy missing' : 'Backup copy corrupt',
+          body:
+            input.result === 'MISSING'
+              ? 'A configured backup copy could not be found.'
+              : 'A configured backup copy failed integrity verification.',
+          section: 'integrity',
+          entityId: input.copyId,
+        });
+      }
+    });
+    transaction();
+  }
+
+  public cancelIntegrityCheck(checkId: string, copyId: string): void {
+    const completedAt = this.now();
+    const changed = this.database.sqlite
+      .prepare(
+        `update integrity_checks set result = 'ERROR', completed_at = ?,
+          error_code = 'INTERNAL_ERROR', error_message_safe = ?
+         where id = ? and media_copy_id = ? and result = 'PENDING'`,
+      )
+      .run(completedAt, 'Verification was cancelled before completion.', checkId, copyId);
+    if (changed.changes === 0) return;
+    const copy = this.getMediaCopy(copyId);
+    this.insertActivity({
+      eventType: 'INTEGRITY_CANCELLED',
+      mediaItemId: copy.mediaItemId,
+      destinationId: copy.destinationId,
+      summary: 'Integrity verification was cancelled before completion.',
+      severity: 'INFO',
+      createdAt: completedAt,
+    });
+  }
+
+  public integrityOverview(limit = 100): IntegrityOverview {
+    const copyRows = this.database.sqlite
+      .prepare(
+        `select mc.*, mi.id as intended_media_item_id, cd.destination_id as intended_destination_id,
+          d.destination_type, d.availability_status,
+          mi.title as media_title, mi.channel_id, mi.source_status, c.title as channel_title
+         from media_items mi
+         join channels c on c.id = mi.channel_id
+         join channel_destinations cd on cd.channel_id = c.id and cd.enabled = 1
+         join destinations d on d.id = cd.destination_id and d.enabled = 1
+         left join media_copies mc on mc.media_item_id = mi.id and mc.destination_id = d.id
+         where c.backup_enabled = 1
+         order by coalesce(mc.updated_at, mi.updated_at) desc`,
+      )
+      .all() as Array<Record<string, unknown>>;
+    const mediaGroups = new Map<string, Array<Record<string, unknown>>>();
+    for (const row of copyRows) {
+      const mediaId = String(row.intended_media_item_id);
+      mediaGroups.set(mediaId, [...(mediaGroups.get(mediaId) ?? []), row]);
+    }
+    const health = {
+      complete: 0,
+      partial: 0,
+      pending: 0,
+      missing: 0,
+      corrupt: 0,
+      unavailable: 0,
+      authRequired: 0,
+    };
+    const summaryKey = {
+      COMPLETE: 'complete',
+      PARTIAL: 'partial',
+      PENDING: 'pending',
+      MISSING: 'missing',
+      CORRUPT: 'corrupt',
+      UNAVAILABLE: 'unavailable',
+      AUTH_REQUIRED: 'authRequired',
+    } as const;
+    const mediaHealth = [...mediaGroups.values()].map((rows) => {
+      const statuses = rows.map((row) => (row.id === null ? 'PENDING' : String(row.status)));
+      const availability = rows.map((row) => String(row.availability_status));
+      const category: BackupHealth = availability.includes('AUTH_REQUIRED')
+        ? 'AUTH_REQUIRED'
+        : statuses.includes('CORRUPT')
+          ? 'CORRUPT'
+          : statuses.includes('MISSING')
+            ? 'MISSING'
+            : statuses.includes('UNAVAILABLE') || availability.includes('DISCONNECTED')
+              ? 'UNAVAILABLE'
+              : statuses.every((status) => status === 'VERIFIED')
+                ? 'COMPLETE'
+                : statuses.some((status) => status === 'VERIFIED')
+                  ? 'PARTIAL'
+                  : 'PENDING';
+      health[summaryKey[category]] += 1;
+      return {
+        mediaItemId: String(rows[0]!.intended_media_item_id),
+        mediaTitle: String(rows[0]!.media_title),
+        channelId: String(rows[0]!.channel_id),
+        channelTitle: String(rows[0]!.channel_title),
+        health: category,
+        intendedCopyCount: rows.length,
+        verifiedCopyCount: statuses.filter((status) => status === 'VERIFIED').length,
+      };
+    });
+    const channelGroups = new Map<
+      string,
+      { channelId: string; channelTitle: string; health: typeof health }
+    >();
+    for (const media of mediaHealth) {
+      const current = channelGroups.get(media.channelId) ?? {
+        channelId: media.channelId,
+        channelTitle: media.channelTitle,
+        health: {
+          complete: 0,
+          partial: 0,
+          pending: 0,
+          missing: 0,
+          corrupt: 0,
+          unavailable: 0,
+          authRequired: 0,
+        },
+      };
+      current.health[summaryKey[media.health]] += 1;
+      channelGroups.set(media.channelId, current);
+    }
+    const channelHealth = [...channelGroups.values()].sort((left, right) =>
+      left.channelTitle.localeCompare(right.channelTitle),
+    );
+    const issues = copyRows
+      .filter((row) => {
+        return (
+          (row.id !== null &&
+            ['MISSING', 'CORRUPT', 'UNAVAILABLE', 'FAILED'].includes(String(row.status))) ||
+          (row.id !== null &&
+            ['DISCONNECTED', 'AUTH_REQUIRED'].includes(String(row.availability_status)))
+        );
+      })
+      .slice(0, limit)
+      .map((row) => {
+        const copyId = String(row.id);
+        const status = String(row.status);
+        const availability = String(row.availability_status);
+        const healthValue =
+          availability === 'AUTH_REQUIRED'
+            ? 'AUTH_REQUIRED'
+            : status === 'CORRUPT'
+              ? 'CORRUPT'
+              : status === 'MISSING'
+                ? 'MISSING'
+                : 'UNAVAILABLE';
+        const candidates = this.verifiedCopies(String(row.intended_media_item_id))
+          .filter((copy) => copy.id !== copyId)
+          .sort((left, right) => {
+            if (left.destinationType === right.destinationType)
+              return left.id.localeCompare(right.id);
+            return left.destinationType === 'FILESYSTEM' ? -1 : 1;
+          });
+        return {
+          copyId,
+          mediaItemId: String(row.intended_media_item_id),
+          mediaTitle: String(row.media_title),
+          channelId: String(row.channel_id),
+          channelTitle: String(row.channel_title),
+          destinationId: String(row.destination_id),
+          destinationType: row.destination_type,
+          copyStatus: row.status,
+          destinationAvailability: row.availability_status,
+          health: healthValue,
+          lastCheckedAt: row.last_checked_at,
+          safeMessage:
+            healthValue === 'AUTH_REQUIRED'
+              ? 'Google Drive authorization is required.'
+              : healthValue === 'CORRUPT'
+                ? 'The stored bytes do not match the expected SHA-256.'
+                : healthValue === 'MISSING'
+                  ? 'The configured backup copy is missing.'
+                  : 'The destination is currently unavailable.',
+          repairSources: candidates.map((candidate, index) => ({
+            copyId: candidate.id,
+            destinationId: candidate.destinationId,
+            destinationType: candidate.destinationType,
+            verificationStrength: candidate.verificationStrength,
+            preferred: index === 0,
+          })),
+          youtubeFallbackAvailable: row.source_status === 'AVAILABLE',
+        };
+      });
+    const historyRows = this.database.sqlite
+      .prepare(
+        `select ic.*, mc.media_item_id, mi.title as media_title, d.destination_type
+         from integrity_checks ic
+         join media_copies mc on mc.id = ic.media_copy_id
+         join media_items mi on mi.id = mc.media_item_id
+         join destinations d on d.id = ic.destination_id
+          order by (ic.completed_at is null), coalesce(ic.completed_at, ic.created_at) desc,
+            ic.created_at desc, ic.id limit ?`,
+      )
+      .all(limit) as Array<Record<string, unknown>>;
+    const history = historyRows.map((row) =>
+      IntegrityCheckDtoSchema.parse({
+        id: row.id,
+        runId: row.backup_run_id,
+        jobId: row.job_id,
+        mediaCopyId: row.media_copy_id,
+        mediaItemId: row.media_item_id,
+        mediaTitle: row.media_title,
+        destinationId: row.destination_id,
+        destinationType: row.destination_type,
+        verificationStrength: row.verification_strength,
+        expectedSha256: row.expected_sha256,
+        actualSha256: row.actual_sha256,
+        expectedBytes: row.expected_bytes,
+        actualBytes: row.actual_bytes,
+        result: row.result,
+        startedAt: row.started_at,
+        completedAt: row.completed_at,
+        safeMessage: row.error_message_safe,
+      }),
+    );
+    return IntegrityOverviewSchema.parse({
+      health,
+      channels: channelHealth,
+      media: mediaHealth.slice(0, limit),
+      issues,
+      history,
+    });
+  }
+
+  public planRepair(
+    copyId: string,
+    allowYoutubeFallback: boolean,
+    defaultQualityProfile: QualityProfile,
+    stagingRoot: string,
+  ): RepairStartResult {
+    const target = this.getMediaCopy(copyId);
+    const media = this.getMediaContext(target.mediaItemId);
+    const createdAt = this.now();
+    const runId = randomUUID();
+    if (target.status === 'VERIFIED') {
+      this.database.sqlite
+        .prepare(
+          `insert into backup_runs (
+            id, channel_id, trigger_type, status, effective_config_json, discovered_count,
+            started_at, completed_at, created_at, updated_at
+          ) values (?, ?, 'REPAIR', 'COMPLETED', ?, 1, ?, ?, ?, ?)`,
+        )
+        .run(
+          runId,
+          media.channelId,
+          JSON.stringify({
+            qualityProfile: target.qualityProfile ?? defaultQualityProfile,
+            destinationIds: [target.destinationId],
+            targetCopyId: target.id,
+          }),
+          createdAt,
+          createdAt,
+          createdAt,
+          createdAt,
+        );
+      return RepairStartResultSchema.parse({
+        runId,
+        targetCopyId: copyId,
+        source: 'ALREADY_HEALTHY',
+        status: 'COMPLETED',
+        plannedJobs: 0,
+      });
+    }
+    if (!['MISSING', 'CORRUPT', 'UNAVAILABLE', 'FAILED'].includes(target.status)) {
+      throw new Error('This backup copy is not in a repairable unhealthy state.');
+    }
+    const sources = this.verifiedCopies(target.mediaItemId)
+      .filter((copy) => copy.id !== target.id)
+      .sort((left, right) => {
+        if (left.destinationType === right.destinationType) return left.id.localeCompare(right.id);
+        return left.destinationType === 'FILESYSTEM' ? -1 : 1;
+      });
+    const source = sources[0] ?? null;
+    if (
+      source === null &&
+      (!allowYoutubeFallback || ['REMOVED', 'UNAVAILABLE'].includes(media.sourceStatus))
+    ) {
+      throw new Error('No trusted archive source is available for this repair.');
+    }
+    const qualityProfile = source?.qualityProfile ?? target.qualityProfile ?? defaultQualityProfile;
+    const generation = `repair-${target.id}-${createdAt}`;
+    const stagingDirectory = join(stagingRoot, 'repair', target.mediaItemId, generation);
+    const config = {
+      qualityProfile,
+      destinationIds: [target.destinationId],
+      targetCopyId: target.id,
+      sourceCopyId: source?.id ?? null,
+    };
+    let plannedJobs = 0;
+    const transaction = this.database.sqlite.transaction(() => {
+      this.database.sqlite
+        .prepare(
+          `insert into backup_runs (
+            id, channel_id, trigger_type, status, effective_config_json, discovered_count,
+            started_at, created_at, updated_at
+          ) values (?, ?, 'REPAIR', 'RUNNING', ?, 1, ?, ?, ?)`,
+        )
+        .run(runId, media.channelId, JSON.stringify(config), createdAt, createdAt, createdAt);
+      let acquisitionDependency: string | null = null;
+      let localSourceCopyId: string | null = null;
+      if (source?.destinationType === 'FILESYSTEM') {
+        localSourceCopyId = source.id;
+      } else if (source?.destinationType === 'GOOGLE_DRIVE') {
+        acquisitionDependency = this.insertJob({
+          backupRunId: runId,
+          channelId: media.channelId,
+          mediaItemId: media.id,
+          destinationId: source.destinationId,
+          jobType: 'DOWNLOAD_FROM_GOOGLE_DRIVE',
+          status: 'READY',
+          priority: 80,
+          payload: { sourceCopyId: source.id, generation, stagingDirectory },
+          idempotencyKey: `repair-drive-download:${target.id}:${source.id}:${createdAt}`,
+        });
+        plannedJobs += 1;
+      } else {
+        const formatId = this.insertJob({
+          backupRunId: runId,
+          channelId: media.channelId,
+          mediaItemId: media.id,
+          jobType: 'FORMAT_PROBE',
+          status: 'READY',
+          priority: 100,
+          payload: { qualityProfile, stagingDirectory },
+          idempotencyKey: `repair-format:${target.id}:${createdAt}`,
+        });
+        const downloadId = this.insertJob({
+          backupRunId: runId,
+          channelId: media.channelId,
+          mediaItemId: media.id,
+          jobType: 'DOWNLOAD_MEDIA',
+          status: 'PENDING',
+          priority: 90,
+          payload: { stagingDirectory, generation },
+          idempotencyKey: `repair-download:${target.id}:${createdAt}`,
+          dependencies: [formatId],
+        });
+        const processId = this.insertJob({
+          backupRunId: runId,
+          channelId: media.channelId,
+          mediaItemId: media.id,
+          jobType: 'POST_PROCESS_MEDIA',
+          status: 'PENDING',
+          priority: 80,
+          payload: { stagingDirectory, generation },
+          idempotencyKey: `repair-process:${target.id}:${createdAt}`,
+          dependencies: [downloadId],
+        });
+        const hashId = this.insertJob({
+          backupRunId: runId,
+          channelId: media.channelId,
+          mediaItemId: media.id,
+          jobType: 'HASH_STAGING_MEDIA',
+          status: 'PENDING',
+          priority: 70,
+          payload: { generation },
+          idempotencyKey: `repair-hash:${target.id}:${createdAt}`,
+          dependencies: [processId],
+        });
+        acquisitionDependency = this.insertJob({
+          backupRunId: runId,
+          channelId: media.channelId,
+          mediaItemId: media.id,
+          jobType: 'VERIFY_STAGING_MEDIA',
+          status: 'PENDING',
+          priority: 60,
+          payload: { generation },
+          idempotencyKey: `repair-staging-verify:${target.id}:${createdAt}`,
+          dependencies: [hashId],
+        });
+        plannedJobs += 5;
+      }
+      const dependencies = acquisitionDependency === null ? [] : [acquisitionDependency];
+      let folderDependency: string | null = null;
+      if (target.destinationType === 'GOOGLE_DRIVE') {
+        const rootId = this.insertJob({
+          backupRunId: runId,
+          channelId: media.channelId,
+          destinationId: target.destinationId,
+          jobType: 'ENSURE_GOOGLE_DRIVE_ROOT',
+          status: 'READY',
+          priority: 65,
+          payload: {},
+          idempotencyKey: `repair-drive-root:${target.id}:${createdAt}`,
+        });
+        folderDependency = this.insertJob({
+          backupRunId: runId,
+          channelId: media.channelId,
+          destinationId: target.destinationId,
+          jobType: 'ENSURE_GOOGLE_DRIVE_FOLDER',
+          status: 'PENDING',
+          priority: 64,
+          payload: {},
+          idempotencyKey: `repair-drive-folders:${target.id}:${createdAt}`,
+          dependencies: [rootId],
+        });
+        plannedJobs += 2;
+      }
+      const transferId = this.insertJob({
+        backupRunId: runId,
+        channelId: media.channelId,
+        mediaItemId: media.id,
+        destinationId: target.destinationId,
+        jobType:
+          target.destinationType === 'FILESYSTEM' ? 'COPY_TO_FILESYSTEM' : 'UPLOAD_TO_GOOGLE_DRIVE',
+        status: dependencies.length === 0 && folderDependency === null ? 'READY' : 'PENDING',
+        priority: 50,
+        payload: {
+          mediaCopyId: target.id,
+          qualityProfile,
+          contentGeneration: generation,
+          sourceCopyId: localSourceCopyId,
+          replaceUnhealthy: true,
+          repairOriginalStatus: target.status,
+        },
+        idempotencyKey: `repair-transfer:${target.id}:${createdAt}`,
+        dependencies: [...dependencies, ...(folderDependency === null ? [] : [folderDependency])],
+      });
+      const verifyId = this.insertJob({
+        backupRunId: runId,
+        channelId: media.channelId,
+        mediaItemId: media.id,
+        destinationId: target.destinationId,
+        jobType:
+          target.destinationType === 'FILESYSTEM'
+            ? 'VERIFY_FILESYSTEM_COPY'
+            : 'VERIFY_GOOGLE_DRIVE_COPY',
+        status: 'PENDING',
+        priority: 40,
+        payload: {
+          mediaCopyId: target.id,
+          qualityProfile,
+          contentGeneration: generation,
+          repairOriginalStatus: target.status,
+        },
+        idempotencyKey: `repair-verify:${target.id}:${createdAt}`,
+        dependencies: [transferId],
+      });
+      const metadataId = this.insertJob({
+        backupRunId: runId,
+        channelId: media.channelId,
+        mediaItemId: media.id,
+        destinationId: target.destinationId,
+        jobType:
+          target.destinationType === 'FILESYSTEM'
+            ? 'WRITE_DESTINATION_METADATA'
+            : 'UPDATE_GOOGLE_DRIVE_METADATA',
+        status: 'PENDING',
+        priority: 20,
+        payload: { mediaCopyId: target.id, contentGeneration: generation },
+        idempotencyKey: `repair-metadata:${target.id}:${createdAt}`,
+        dependencies: [verifyId],
+      });
+      const manifestId = this.insertJob({
+        backupRunId: runId,
+        channelId: media.channelId,
+        destinationId: target.destinationId,
+        jobType:
+          target.destinationType === 'FILESYSTEM'
+            ? 'UPDATE_MANIFEST'
+            : 'UPDATE_GOOGLE_DRIVE_MANIFEST',
+        status: 'PENDING',
+        priority: 10,
+        payload: { generation: createdAt },
+        idempotencyKey: `repair-manifest:${target.id}:${createdAt}`,
+        dependencies: [metadataId],
+      });
+      plannedJobs += 4;
+      if (acquisitionDependency !== null) {
+        this.insertJob({
+          backupRunId: runId,
+          channelId: media.channelId,
+          mediaItemId: media.id,
+          jobType: 'CLEANUP_STAGING',
+          status: 'PENDING',
+          priority: 0,
+          payload: { generation, stagingDirectory },
+          idempotencyKey: `repair-cleanup:${target.id}:${createdAt}`,
+          dependencies: [manifestId],
+        });
+        plannedJobs += 1;
+      }
+      this.insertActivity({
+        eventType: 'REPAIR_STARTED',
+        channelId: media.channelId,
+        mediaItemId: media.id,
+        destinationId: target.destinationId,
+        backupRunId: runId,
+        summary: 'Backup copy repair started from the best trusted source.',
+        details: { targetCopyId: target.id, sourceCopyId: source?.id ?? null },
+        createdAt,
+      });
+    });
+    transaction();
+    return RepairStartResultSchema.parse({
+      runId,
+      targetCopyId: target.id,
+      source:
+        source?.destinationType === 'FILESYSTEM'
+          ? 'LOCAL'
+          : source?.destinationType === 'GOOGLE_DRIVE'
+            ? 'GOOGLE_DRIVE'
+            : 'YOUTUBE',
+      status: 'RUNNING',
+      plannedJobs,
+    });
+  }
+
+  public pendingNotifications(settings: AppSettings, limit = 20): NativeNotificationDto[] {
+    const rows = this.database.sqlite
+      .prepare(
+        `select id, category, title, body, route_json, created_at
+         from notification_events where delivered_at is null
+         order by created_at, id limit ?`,
+      )
+      .all(Math.min(20, Math.max(1, limit))) as Array<{
+      id: string;
+      category: string;
+      title: string;
+      body: string;
+      route_json: string;
+      created_at: number;
+    }>;
+    const enabled = (category: string): boolean => {
+      if (category === 'BACKUP_COMPLETED') return settings.notifications.backupComplete;
+      if (['BACKUP_COMPLETED_WITH_ERRORS', 'BACKUP_FAILED'].includes(category))
+        return settings.notifications.backupErrors;
+      if (category === 'DESTINATION_DISCONNECTED')
+        return settings.notifications.destinationDisconnected;
+      if (category === 'DESTINATION_RECONNECTED')
+        return settings.notifications.destinationReconnected;
+      if (category === 'DRIVE_AUTH_REQUIRED') return settings.notifications.authenticationRequired;
+      if (['INTEGRITY_CORRUPT', 'INTEGRITY_MISSING'].includes(category))
+        return settings.notifications.integrityProblems;
+      if (['REPAIR_COMPLETED', 'REPAIR_FAILED'].includes(category))
+        return settings.notifications.repairResults;
+      return settings.notifications.scheduleErrors;
+    };
+    const skipped = rows.filter((row) => !enabled(row.category)).map((row) => row.id);
+    if (skipped.length > 0) this.ackNotifications(skipped);
+    return NotificationListResultSchema.parse({
+      notifications: rows
+        .filter((row) => enabled(row.category))
+        .map((row) => ({
+          id: row.id,
+          category: row.category,
+          title: row.title,
+          body: row.body,
+          route: JSON.parse(row.route_json),
+          createdAt: row.created_at,
+        })),
+    }).notifications;
+  }
+
+  public ackNotifications(notificationIds: string[]): number {
+    const deliveredAt = this.now();
+    const update = this.database.sqlite.prepare(
+      'update notification_events set delivered_at = ? where id = ? and delivered_at is null',
+    );
+    let acknowledged = 0;
+    const transaction = this.database.sqlite.transaction(() => {
+      for (const id of [...new Set(notificationIds)].slice(0, 20)) {
+        acknowledged += update.run(deliveredAt, id).changes;
+      }
+    });
+    transaction();
+    return acknowledged;
+  }
+
   public getRun(runId: string): BackupRunDto {
     const row = this.database.sqlite
       .prepare(
@@ -1070,7 +1923,8 @@ export class LocalBackupRepository {
       .prepare(
         `select br.*, c.title as channel_title from backup_runs br
          join channels c on c.id = br.channel_id
-         where br.trigger_type = 'MANUAL' order by br.created_at desc limit ?`,
+         where br.trigger_type in ('MANUAL','CUSTOM_MANUAL','SCHEDULED','STARTUP')
+         order by br.created_at desc limit ?`,
       )
       .all(limit) as BackupRunRow[];
     return BackupRunsListResultSchema.parse({ runs: rows.map(backupRunDto) }).runs;
@@ -1823,7 +2677,12 @@ export class LocalBackupRepository {
 
   private verifiedCopies(mediaItemId: string): MediaCopyContext[] {
     const rows = this.database.sqlite
-      .prepare(`select id from media_copies where media_item_id = ? and status = 'VERIFIED'`)
+      .prepare(
+        `select mc.id from media_copies mc
+         join destinations d on d.id = mc.destination_id
+         where mc.media_item_id = ? and mc.status = 'VERIFIED'
+           and d.enabled = 1 and d.availability_status = 'AVAILABLE'`,
+      )
       .all(mediaItemId) as Array<{ id: string }>;
     return rows.map((row) => this.getMediaCopy(row.id));
   }
@@ -1892,8 +2751,8 @@ export class LocalBackupRepository {
       ? this.now()
       : null;
     const current = this.database.sqlite
-      .prepare('select status from backup_runs where id = ?')
-      .get(runId) as { status: string } | undefined;
+      .prepare('select status, trigger_type from backup_runs where id = ?')
+      .get(runId) as { status: string; trigger_type: string } | undefined;
     this.database.sqlite
       .prepare(
         `update backup_runs set status = ?, downloaded_count = ?, local_copy_count = ?, drive_upload_count = ?,
@@ -1918,18 +2777,83 @@ export class LocalBackupRepository {
       current.status !== status &&
       (status === 'COMPLETED' || status === 'COMPLETED_WITH_ERRORS')
     ) {
-      const run = this.getRun(runId);
-      this.insertActivity({
-        eventType: 'BACKUP_COMPLETED',
-        channelId: run.channelId,
-        backupRunId: runId,
-        summary:
-          status === 'COMPLETED'
-            ? `Backup completed for ${run.channelTitle}.`
-            : `Backup completed with errors for ${run.channelTitle}.`,
-        severity: status === 'COMPLETED' ? 'INFO' : 'WARNING',
-        createdAt: this.now(),
-      });
+      const completedAtValue = this.now();
+      if (['MANUAL', 'CUSTOM_MANUAL', 'SCHEDULED', 'STARTUP'].includes(current.trigger_type)) {
+        const run = this.getRun(runId);
+        const backupFailed =
+          status !== 'COMPLETED' &&
+          Number(counts.downloaded ?? 0) === 0 &&
+          Number(counts.copied ?? 0) === 0 &&
+          Number(counts.drive_uploaded ?? 0) === 0;
+        this.insertActivity({
+          eventType: backupFailed ? 'BACKUP_FAILED' : 'BACKUP_COMPLETED',
+          channelId: run.channelId,
+          backupRunId: runId,
+          summary: backupFailed
+            ? `Backup failed for ${run.channelTitle}.`
+            : status === 'COMPLETED'
+              ? `Backup completed for ${run.channelTitle}.`
+              : `Backup completed with errors for ${run.channelTitle}.`,
+          severity: status === 'COMPLETED' ? 'INFO' : 'WARNING',
+          createdAt: completedAtValue,
+        });
+        this.enqueueNotification({
+          category: backupFailed
+            ? 'BACKUP_FAILED'
+            : status === 'COMPLETED'
+              ? 'BACKUP_COMPLETED'
+              : 'BACKUP_COMPLETED_WITH_ERRORS',
+          dedupKey: `backup:${runId}:${status}`,
+          title: backupFailed
+            ? 'Backup failed'
+            : status === 'COMPLETED'
+              ? 'Backup completed'
+              : 'Backup completed with errors',
+          body: backupFailed
+            ? `${run.channelTitle} could not finish its backup.`
+            : status === 'COMPLETED'
+              ? `${run.channelTitle} finished backing up.`
+              : `${run.channelTitle} finished with items needing attention.`,
+          section: 'backup',
+          entityId: runId,
+        });
+      } else if (current.trigger_type === 'REPAIR') {
+        const target = this.database.sqlite
+          .prepare('select effective_config_json from backup_runs where id = ?')
+          .get(runId) as { effective_config_json: string };
+        const targetCopyId = (
+          JSON.parse(target.effective_config_json) as { targetCopyId?: unknown }
+        ).targetCopyId;
+        this.insertActivity({
+          eventType: status === 'COMPLETED' ? 'REPAIR_COMPLETED' : 'REPAIR_FAILED',
+          backupRunId: runId,
+          summary:
+            status === 'COMPLETED'
+              ? 'Backup copy repair completed and verified.'
+              : 'Backup copy repair stopped with an error; the target remains unhealthy.',
+          severity: status === 'COMPLETED' ? 'INFO' : 'WARNING',
+          createdAt: completedAtValue,
+        });
+        this.enqueueNotification({
+          category: status === 'COMPLETED' ? 'REPAIR_COMPLETED' : 'REPAIR_FAILED',
+          dedupKey: `repair:${runId}:${status}`,
+          title: status === 'COMPLETED' ? 'Repair completed' : 'Repair failed',
+          body:
+            status === 'COMPLETED'
+              ? 'The replacement copy passed verification.'
+              : 'The replacement was not promoted. Review the Repair Center.',
+          section: 'integrity',
+          entityId: typeof targetCopyId === 'string' ? targetCopyId : null,
+        });
+      } else if (current.trigger_type === 'VERIFY') {
+        this.insertActivity({
+          eventType: 'INTEGRITY_COMPLETED',
+          backupRunId: runId,
+          summary: 'Integrity verification completed.',
+          severity: status === 'COMPLETED' ? 'INFO' : 'WARNING',
+          createdAt: completedAtValue,
+        });
+      }
     }
   }
 
@@ -1964,6 +2888,41 @@ export class LocalBackupRepository {
         input.summary,
         JSON.stringify(input.details ?? {}),
         input.createdAt,
+      );
+  }
+
+  public restoreUnhealthyCopyStatus(copyId: string, status: string): void {
+    if (!['MISSING', 'CORRUPT', 'UNAVAILABLE', 'FAILED'].includes(status)) return;
+    this.database.sqlite
+      .prepare(
+        `update media_copies set status = ?, updated_at = ?
+         where id = ? and status in ('TRANSFERRING','VERIFYING','FAILED','MISSING','CORRUPT','UNAVAILABLE')`,
+      )
+      .run(status, this.now(), copyId);
+  }
+
+  private enqueueNotification(input: {
+    category: string;
+    dedupKey: string;
+    title: string;
+    body: string;
+    section: 'dashboard' | 'backup' | 'queue' | 'storage' | 'integrity' | 'settings';
+    entityId: string | null;
+  }): void {
+    this.database.sqlite
+      .prepare(
+        `insert into notification_events (
+          id, category, dedup_key, title, body, route_json, created_at
+        ) values (?, ?, ?, ?, ?, ?, ?) on conflict(dedup_key) do nothing`,
+      )
+      .run(
+        randomUUID(),
+        input.category,
+        input.dedupKey,
+        input.title,
+        input.body,
+        JSON.stringify({ section: input.section, entityId: input.entityId }),
+        this.now(),
       );
   }
 }

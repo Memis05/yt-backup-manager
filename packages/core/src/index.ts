@@ -3,6 +3,7 @@ export * from './backup-errors';
 export * from './catalog-dtos';
 export * from './dtos';
 export * from './enums';
+export * from './phase6-dtos';
 export * from './recovery-dtos';
 export * from './settings';
 export * from './source-provider';

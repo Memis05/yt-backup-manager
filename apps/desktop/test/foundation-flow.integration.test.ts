@@ -151,7 +151,7 @@ describe('desktop-to-worker foundation flow', () => {
     await expect(foundationHandler!(null, {})).resolves.toMatchObject({
       worker: { status: 'READY' },
       database: {
-        schemaVersion: 8,
+        schemaVersion: 9,
         foreignKeysEnabled: true,
         journalMode: 'wal',
       },

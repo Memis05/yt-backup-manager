@@ -57,6 +57,13 @@
       "when": 1786569055374,
       "tag": "0007_cooing_supreme_intelligence",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1786636623419,
+      "tag": "0008_phase_6_scheduling_integrity_repair",
+      "breakpoints": true
     }
   ]
 }

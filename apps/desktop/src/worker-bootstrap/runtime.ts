@@ -12,6 +12,7 @@ import {
   DatabaseHealthService,
   DrizzleGoogleAccountRepository,
   DrizzleSettingsRepository,
+  SchedulingRepository,
   SourceCatalogService,
   SourceSyncCoordinator,
   acquireWorkerDatabaseOwnership,
@@ -21,6 +22,13 @@ import {
 import { WorkerRpcServer, createUserScopedEndpoints, type WorkerRpcHandlers } from '@ytbm/ipc';
 import { NamedPipeWorkerSingleton, WorkerAlreadyRunningError } from '@ytbm/job-engine';
 import { RecoveryService } from '@ytbm/recovery';
+import {
+  PeriodicIntegritySchedulingService,
+  PERIODIC_INTEGRITY_TASK_ID,
+  SchedulingService,
+  UnavailableWindowsTaskScheduler,
+  type WindowsTaskSchedulerAdapter,
+} from '@ytbm/scheduler-windows';
 import {
   EncryptedFileCredentialStore,
   JsonLinesFileSink,
@@ -49,6 +57,10 @@ export interface WorkerRuntimeOptions {
   onShutdownRequested?: () => void;
   ytDlpExecutable: string;
   ffmpegExecutable: string;
+  schedulerAdapter?: WindowsTaskSchedulerAdapter;
+  scheduledExecutablePath?: string | null;
+  scheduledScheduleId?: string | null;
+  scheduledIntegrityId?: string | null;
 }
 
 export class WorkerRuntime {
@@ -63,6 +75,10 @@ export class WorkerRuntime {
   private sourceSync: SourceSyncCoordinator | null = null;
   private localBackup: LocalBackupRuntime | null = null;
   private recovery: RecoveryService | null = null;
+  private scheduling: SchedulingService | null = null;
+  private periodicIntegrityScheduling: PeriodicIntegritySchedulingService | null = null;
+  private scheduledIdleTimer: NodeJS.Timeout | null = null;
+  private shutdownWhenIdle = false;
 
   public constructor(private readonly options: WorkerRuntimeOptions) {
     this.now = options.now ?? Date.now;
@@ -161,6 +177,23 @@ export class WorkerRuntime {
         googleDriveStorage,
         now: this.now,
       });
+      const schedulerAdapter =
+        this.options.schedulerAdapter ?? new UnavailableWindowsTaskScheduler();
+      this.scheduling = new SchedulingService({
+        repository: new SchedulingRepository(this.database, this.now),
+        adapter: schedulerAdapter,
+        executablePath: this.options.scheduledExecutablePath ?? null,
+        now: this.now,
+        startBackup: (channelId, trigger) => this.localBackup!.startBackup(channelId, trigger),
+      });
+      this.periodicIntegrityScheduling = new PeriodicIntegritySchedulingService({
+        adapter: schedulerAdapter,
+        executablePath: this.options.scheduledExecutablePath ?? null,
+        settings: () => settings.get(),
+        lastIntegrityStartedAt: () => this.localBackup!.lastIntegrityStartedAt(),
+        startIntegrity: (scope, driveMode) => this.localBackup!.startIntegrity(scope, driveMode),
+        now: this.now,
+      });
 
       const endpoints = createUserScopedEndpoints(this.options.config.paths.runtime);
       const authToken = await new RpcAuthTokenStore(
@@ -168,9 +201,16 @@ export class WorkerRuntime {
       ).loadOrCreate();
       const handlers: WorkerRpcHandlers = {
         'worker.health': () => this.workerHealth(),
-        'worker.scheduledWake': ({ requestedAt }) => {
-          this.logger.info('Scheduled worker wake received', { requestedAt });
-          return { accepted: true };
+        'worker.scheduledWake': ({ scheduleId, requestedAt }) => {
+          this.logger.info('Scheduled worker wake received', { scheduleId, requestedAt });
+          return this.scheduling!.trigger(scheduleId, Date.parse(requestedAt));
+        },
+        'worker.scheduledIntegrityWake': ({ scheduleId, requestedAt }) => {
+          if (scheduleId !== PERIODIC_INTEGRITY_TASK_ID) {
+            throw new Error('The scheduled integrity maintenance ID is invalid.');
+          }
+          this.logger.info('Scheduled integrity wake received', { scheduleId, requestedAt });
+          return this.periodicIntegrityScheduling!.trigger(Date.parse(requestedAt));
         },
         'worker.shutdownIfIdle': () => {
           if (
@@ -178,6 +218,8 @@ export class WorkerRuntime {
             this.sourceSync?.isIdle() === false ||
             this.googleAccounts?.isIdle() === false ||
             this.recovery?.isIdle() === false ||
+            this.scheduling?.isIdle() === false ||
+            this.periodicIntegrityScheduling?.isIdle() === false ||
             this.localBackup?.requestShutdownIfIdle() !== true
           ) {
             return { accepted: false };
@@ -186,10 +228,29 @@ export class WorkerRuntime {
           setTimeout(this.options.onShutdownRequested, 50);
           return { accepted: true };
         },
+        'worker.shutdownWhenIdle': () => {
+          this.shutdownWhenIdle = true;
+          this.localBackup!.prepareShutdownWhenIdle();
+          this.startIdleShutdownMonitor();
+          return { accepted: true } as const;
+        },
         'app.info': () => this.applicationInfo(),
         'database.health': () => databaseHealth.getHealth(),
         'settings.get': () => settings.get(),
-        'settings.update': (patch) => settings.update(patch),
+        'settings.update': async (patch) => {
+          const updated = await settings.update(patch);
+          await this.periodicIntegrityScheduling!.reconcile();
+          return updated;
+        },
+        'schedules.list': () => ({ schedules: this.scheduling!.list() }),
+        'schedules.upsert': (input) => this.scheduling!.upsert(input),
+        'schedules.remove': async ({ scheduleId }) => {
+          await this.scheduling!.remove(scheduleId);
+          return { removed: true } as const;
+        },
+        'schedules.triggerStartup': async ({ requestedAt }) => ({
+          results: await this.scheduling!.triggerStartup(Date.parse(requestedAt)),
+        }),
         'accounts.oauthBegin': ({ accountId, capability }) =>
           this.googleAccounts!.beginConnection(accountId, capability),
         'accounts.oauthConfigure': ({ clientId, clientSecret }) => ({
@@ -240,6 +301,17 @@ export class WorkerRuntime {
         'storage.resolveGoogleDriveObject': ({ mediaCopyId, destinationId }) =>
           this.localBackup!.resolveGoogleDriveObject(mediaCopyId, destinationId),
         'dashboard.summary': () => this.localBackup!.dashboardSummary(),
+        'integrity.start': ({ scope, driveMode }) =>
+          this.localBackup!.startIntegrity(scope, driveMode),
+        'integrity.overview': () => this.localBackup!.integrityOverview(),
+        'repair.start': ({ copyId, allowYoutubeFallback }) =>
+          this.localBackup!.startRepair(copyId, allowYoutubeFallback),
+        'notifications.pending': async () => ({
+          notifications: await this.localBackup!.pendingNotifications(),
+        }),
+        'notifications.ack': ({ notificationIds }) => ({
+          acknowledged: this.localBackup!.acknowledgeNotifications(notificationIds),
+        }),
         'tools.diagnostics': () => this.localBackup!.diagnostics(),
         'recovery.create': () => this.recovery!.createSession(),
         'recovery.latest': () => this.recovery!.latestSession(),
@@ -258,6 +330,30 @@ export class WorkerRuntime {
       await this.rpcServer.start();
       this.sourceSync.resumePending();
       this.localBackup.start();
+      await this.scheduling.reconcile();
+      await this.periodicIntegrityScheduling.reconcile();
+      if (
+        this.options.scheduledScheduleId !== null &&
+        this.options.scheduledScheduleId !== undefined
+      ) {
+        await this.scheduling.trigger(this.options.scheduledScheduleId, this.now()).catch(() => {
+          this.logger.warn('Scheduled occurrence could not be planned', {
+            scheduleId: this.options.scheduledScheduleId,
+          });
+        });
+        this.startIdleShutdownMonitor();
+      }
+      if (
+        this.options.scheduledIntegrityId !== null &&
+        this.options.scheduledIntegrityId !== undefined
+      ) {
+        await this.periodicIntegrityScheduling.trigger(this.now()).catch(() => {
+          this.logger.warn('Scheduled integrity occurrence could not be planned', {
+            scheduleId: this.options.scheduledIntegrityId,
+          });
+        });
+        this.startIdleShutdownMonitor();
+      }
       this.logger.info('Worker ready', { mode: this.options.mode });
       return true;
     } catch (error) {
@@ -269,12 +365,16 @@ export class WorkerRuntime {
   }
 
   public async stop(): Promise<void> {
+    if (this.scheduledIdleTimer !== null) clearInterval(this.scheduledIdleTimer);
+    this.scheduledIdleTimer = null;
     await this.rpcServer?.stop();
     this.rpcServer = null;
     await this.sourceSync?.stop();
     this.sourceSync = null;
     await this.recovery?.stop();
     this.recovery = null;
+    this.scheduling = null;
+    this.periodicIntegrityScheduling = null;
     await this.googleAccounts?.stop();
     await this.localBackup?.stop();
     this.localBackup = null;
@@ -303,5 +403,33 @@ export class WorkerRuntime {
       platform: process.platform,
       arch: process.arch,
     };
+  }
+
+  private startIdleShutdownMonitor(): void {
+    if (
+      (this.options.mode !== 'SCHEDULED' && !this.shutdownWhenIdle) ||
+      this.options.onShutdownRequested === undefined ||
+      this.scheduledIdleTimer !== null
+    ) {
+      return;
+    }
+    const startedAt = this.now();
+    this.scheduledIdleTimer = setInterval(() => {
+      if (this.now() - startedAt < 1_000) return;
+      if (
+        this.sourceSync?.isIdle() !== true ||
+        this.googleAccounts?.isIdle() !== true ||
+        this.recovery?.isIdle() !== true ||
+        this.scheduling?.isIdle() !== true ||
+        this.periodicIntegrityScheduling?.isIdle() !== true ||
+        this.localBackup?.isIdle() !== true
+      ) {
+        return;
+      }
+      if (this.scheduledIdleTimer !== null) clearInterval(this.scheduledIdleTimer);
+      this.scheduledIdleTimer = null;
+      this.options.onShutdownRequested?.();
+    }, 500);
+    this.scheduledIdleTimer.unref();
   }
 }

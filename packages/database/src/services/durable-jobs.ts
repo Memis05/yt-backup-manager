@@ -27,6 +27,7 @@ import type { WorkerDatabase } from '../database';
 interface JobRow {
   id: string;
   backup_run_id: string | null;
+  operation_type: string | null;
   channel_id: string | null;
   media_item_id: string | null;
   media_title: string | null;
@@ -87,6 +88,7 @@ function queueDto(row: JobRow): QueueJobDto {
   return QueueJobDtoSchema.parse({
     id: row.id,
     backupRunId: row.backup_run_id,
+    operationType: row.operation_type,
     channelId: row.channel_id,
     mediaItemId: row.media_item_id,
     mediaTitle: row.media_title,
@@ -111,12 +113,13 @@ function queueDto(row: JobRow): QueueJobDto {
   });
 }
 
-const SELECT_JOB = `select j.*, m.title as media_title,
+const SELECT_JOB = `select j.*, br.trigger_type as operation_type, m.title as media_title,
   case when d.destination_type = 'GOOGLE_DRIVE'
     then 'Google Drive' || case when a.email is null then '' else ' - ' || a.email end
     else d.root_path end as destination_path,
   d.destination_type
   from jobs j
+  left join backup_runs br on br.id = j.backup_run_id
   left join media_items m on m.id = j.media_item_id
   left join destinations d on d.id = j.destination_id
   left join accounts a on a.id = d.account_id`;

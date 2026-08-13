@@ -130,6 +130,59 @@ describe('FilesystemStorageProvider', () => {
     await expect(readFile(join(root, 'video.mp4'), 'utf8')).resolves.toBe('unrelated');
   });
 
+  it('repairs a wrong existing file through verified atomic replacement', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ytbm-copy-repair-'));
+    temporaryDirectories.push(directory);
+    const root = join(directory, 'destination');
+    const source = join(directory, 'source.bin');
+    await mkdir(root);
+    await writeFile(source, 'trusted verified repair source');
+    await writeFile(join(root, 'video.mp4'), 'corrupt destination bytes');
+    const expected = await hashFileSha256(source);
+    const provider = new FilesystemStorageProvider(volumes);
+
+    await expect(
+      provider.replaceFile({
+        destination: destination(root),
+        sourcePath: source,
+        relativePath: 'video.mp4',
+        expectedSha256: expected.sha256,
+        expectedBytes: expected.bytes,
+      }),
+    ).resolves.toMatchObject({ sha256: expected.sha256, bytes: expected.bytes });
+    await expect(readFile(join(root, 'video.mp4'), 'utf8')).resolves.toBe(
+      'trusted verified repair source',
+    );
+    expect((await readdir(root)).filter((name) => name !== 'video.mp4')).toEqual([]);
+  });
+
+  it('preserves the unhealthy target when repair staging is interrupted', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'ytbm-copy-repair-interrupt-'));
+    temporaryDirectories.push(directory);
+    const root = join(directory, 'destination');
+    const source = join(directory, 'source.bin');
+    await mkdir(root);
+    await writeFile(source, Buffer.alloc(2 * 1024 * 1024, 0x71));
+    await writeFile(join(root, 'video.mp4'), 'original corrupt bytes');
+    const expected = await hashFileSha256(source);
+    const controller = new AbortController();
+    const provider = new FilesystemStorageProvider(volumes);
+
+    await expect(
+      provider.replaceFile({
+        destination: destination(root),
+        sourcePath: source,
+        relativePath: 'video.mp4',
+        expectedSha256: expected.sha256,
+        expectedBytes: expected.bytes,
+        signal: controller.signal,
+        onProgress: () => controller.abort(new Error('repair interrupted')),
+      }),
+    ).rejects.toThrow('repair interrupted');
+    await expect(readFile(join(root, 'video.mp4'), 'utf8')).resolves.toBe('original corrupt bytes');
+    expect((await readdir(root)).filter((name) => name !== 'video.mp4')).toEqual([]);
+  });
+
   it('reports a missing destination as disconnected', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'ytbm-copy-'));
     temporaryDirectories.push(directory);

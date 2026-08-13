@@ -327,7 +327,7 @@ Implement explicit schema-version parsing.
 Current expected schema:
 
 ```json
-{"schemaVersion":1}
+{ "schemaVersion": 1 }
 ```
 
 Requirements:
