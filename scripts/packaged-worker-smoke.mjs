@@ -50,7 +50,7 @@ const userData = join(temporary, 'user-data');
 const localData = join(temporary, 'local-data');
 const environment = { ...process.env };
 delete environment.ELECTRON_RUN_AS_NODE;
-const child = spawn(executable, ['--disable-gpu', '--worker'], {
+const child = spawn(executable, ['--disable-gpu', '--disable-software-rasterizer', '--worker'], {
   shell: false,
   windowsHide: true,
   stdio: ['ignore', 'pipe', 'pipe'],

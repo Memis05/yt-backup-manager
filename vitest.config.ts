@@ -47,7 +47,24 @@ export default defineConfig({
           ...common,
           name: 'unit',
           include: ['packages/**/*.test.ts', 'apps/**/*.test.ts'],
-          exclude: ['**/node_modules/**', '**/dist/**', '**/out/**', '**/*.integration.test.ts'],
+          exclude: [
+            '**/node_modules/**',
+            '**/dist/**',
+            '**/out/**',
+            '**/*.integration.test.ts',
+            'apps/desktop/test/renderer/**',
+          ],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          ...common,
+          name: 'renderer',
+          environment: 'jsdom',
+          include: ['apps/desktop/test/renderer/**/*.test.{ts,tsx}'],
+          exclude: ['**/node_modules/**', '**/dist/**', '**/out/**'],
+          setupFiles: ['apps/desktop/test/renderer/setup.ts'],
         },
       },
       {

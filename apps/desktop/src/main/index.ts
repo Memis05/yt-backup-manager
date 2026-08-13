@@ -25,6 +25,7 @@ import {
 } from '@ytbm/scheduler-windows';
 import managedBinaries from '../../../../resources/managed-binaries.json';
 
+import { APPLICATION_ICON_DATA_URL, APPLICATION_NAME } from '../app-identity';
 import { loadDevelopmentEnvironment, loadRuntimeConfig } from '../config/runtime';
 import { WorkerRuntime } from '../worker-bootstrap/runtime';
 import { registerDesktopIpcHandlers } from './desktop-ipc';
@@ -33,6 +34,7 @@ import { ElectronSafeStorageAdapter } from './safe-storage-adapter';
 import { DesktopWorkerManager } from './worker-manager';
 import { verifyManagedBinaryIntegrity } from './managed-binary-integrity';
 import { createWindowOptions } from './window-options';
+import { createTrayMenuTemplate, removeDefaultApplicationMenu } from './desktop-menu';
 
 function runtimeConfig() {
   const localData = process.env.LOCALAPPDATA
@@ -179,6 +181,7 @@ async function runDesktop(): Promise<void> {
     return;
   }
 
+  removeDefaultApplicationMenu(Menu);
   await app.whenReady();
   const config = runtimeConfig();
   const logger = new StructuredLogger(
@@ -216,8 +219,9 @@ async function runDesktop(): Promise<void> {
     }
   };
   applySystemSettings(settings);
+  const appIcon = nativeImage.createFromDataURL(APPLICATION_ICON_DATA_URL);
   const window = new BrowserWindow(
-    createWindowOptions(join(import.meta.dirname, '../preload/index.cjs')),
+    createWindowOptions(join(import.meta.dirname, '../preload/index.cjs'), appIcon),
   );
   const unregisterIpc = registerDesktopIpcHandlers(
     ipcMain,
@@ -266,17 +270,14 @@ async function runDesktop(): Promise<void> {
     await window.loadFile(join(import.meta.dirname, '../renderer/index.html'));
   }
 
-  const trayIcon = nativeImage.createFromDataURL(
-    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAQAAAC1+jfqAAAAJ0lEQVR42mNgGAWjYBSMglEwCkbB////D6MZGBgYGRkZGZgYGBgAAEwSAf4uJc8AAAAASUVORK5CYII=',
-  );
+  const trayIcon = appIcon.resize({ width: 16, height: 16, quality: 'best' });
   const tray = new Tray(trayIcon);
-  tray.setToolTip('YouTube Backup Manager');
+  tray.setToolTip(APPLICATION_NAME);
   tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: 'Open', click: () => openWindow() },
-      {
-        label: 'Backup now',
-        click: () => {
+    Menu.buildFromTemplate(
+      createTrayMenuTemplate({
+        open: () => openWindow(),
+        backupNow: () => {
           void worker
             .request('channels.list', { accountId: null, selectedOnly: true })
             .then(async ({ channels }) => {
@@ -289,10 +290,7 @@ async function runDesktop(): Promise<void> {
             })
             .catch(() => undefined);
         },
-      },
-      {
-        label: 'Pause active work',
-        click: () => {
+        pauseActiveWork: () => {
           void worker
             .request('backup.runs', {})
             .then(async ({ runs }) => {
@@ -302,10 +300,7 @@ async function runDesktop(): Promise<void> {
             })
             .catch(() => undefined);
         },
-      },
-      {
-        label: 'Resume paused work',
-        click: () => {
+        resumePausedWork: () => {
           void worker
             .request('backup.runs', {})
             .then(async ({ runs }) => {
@@ -315,17 +310,13 @@ async function runDesktop(): Promise<void> {
             })
             .catch(() => undefined);
         },
-      },
-      { type: 'separator' },
-      {
-        label: 'Quit',
-        click: async () => {
+        quit: async () => {
           quitting = true;
           await worker.request('worker.shutdownWhenIdle', {}).catch(() => undefined);
           app.quit();
         },
-      },
-    ]),
+      }),
+    ),
   );
   tray.on('double-click', () => openWindow());
 
