@@ -14,7 +14,6 @@ import type {
   ChannelDto,
   ChannelBackupSettingsDto,
   DestinationDto,
-  DashboardSummary,
   FoundationStatus,
   JobStatus,
   LibraryQueryResult,
@@ -61,6 +60,7 @@ import {
   useSettingsController,
   useSourceSyncController,
 } from './features/controllers';
+import { HomeScreen } from './features/home';
 import { usePendingOperations } from './app/use-pending-operations';
 import { AppShell } from './shell/AppShell';
 
@@ -383,124 +383,13 @@ export function RouteLocalNavigation({
   );
 }
 
-export function App() {
-  const [route, setRoute] = useState<AppRoute>(defaultAppRoute);
-  return (
-    <AppShell route={route} onNavigate={setRoute}>
-      <LegacyRouteOutlet route={route} onNavigate={setRoute} />
-    </AppShell>
-  );
-}
-
-function LegacyRouteOutlet({
-  route,
-  onNavigate,
-}: {
-  route: AppRoute;
-  onNavigate(route: AppRoute): void;
-}) {
-  const section = appRouteToLegacySection(route);
-  const routeTabPanelProps = localRouteTabPanelProps(route);
-  const setSection = useCallback(
-    (nextSection: LegacySection) => onNavigate(legacySectionToAppRoute(nextSection)),
-    [onNavigate],
-  );
-  const [foundation, setFoundation] = useState<FoundationStatus | null>(null);
-  const [accounts, setAccounts] = useState<AccountDto[]>([]);
-  const [channels, setChannels] = useState<ChannelDto[]>([]);
-  const [startupPending, setStartupPending] = useState(true);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [oauthFlow, setOAuthFlow] = useState<OAuthFlowDto | null>(null);
-  const [syncJobs, setSyncJobs] = useState<Record<string, SourceSyncJobDto>>({});
-  const [destinations, setDestinations] = useState<DestinationDto[]>([]);
-  const [backupSettings, setBackupSettings] = useState<Record<string, ChannelBackupSettingsDto>>(
-    {},
-  );
-  const [backupRuns, setBackupRuns] = useState<BackupRunDto[]>([]);
-  const [queue, setQueue] = useState<QueueSnapshot | null>(null);
-  const [selectedQueueSection, setQueueSection] = useState<QueueSection>('ACTIVE');
-  const queueSection = appRouteToQueueSection(route, selectedQueueSection);
-  const queueRouteScope =
-    route.area === 'activity' ? `${route.view}:${route.entityId ?? ''}` : 'inactive';
-  const [queuePageState, setQueuePageState] = useState({ scope: queueRouteScope, page: 1 });
-  const queuePage = queuePageState.scope === queueRouteScope ? queuePageState.page : 1;
-  const setQueuePage = useCallback(
-    (page: number): void => setQueuePageState({ scope: queueRouteScope, page }),
-    [queueRouteScope],
-  );
-  const [mediaDetails, setMediaDetails] = useState<MediaBackupDetails | null>(null);
-  const [toolDiagnostics, setToolDiagnostics] = useState<ToolDiagnostics | null>(null);
-  const [dashboard, setDashboard] = useState<DashboardSummary | null>(null);
-  const [recovery, setRecovery] = useState<RecoverySessionDto | null>(null);
-  const [schedules, setSchedules] = useState<ScheduleDto[]>([]);
-  const [integrity, setIntegrity] = useState<IntegrityOverview | null>(null);
-  const [integrityScope, setIntegrityScope] = useState('ALL');
-  const [scheduleScope, setScheduleScope] = useState<string>('GLOBAL');
-  const [scheduleFrequency, setScheduleFrequency] = useState<ScheduleFrequency>('DAILY');
-  const [scheduleTime, setScheduleTime] = useState('02:00');
-  const [scheduleWeekday, setScheduleWeekday] = useState(1);
-  const [scheduleEveryHours, setScheduleEveryHours] = useState(6);
-  const [scheduleCatchUp, setScheduleCatchUp] = useState(true);
-  const [scheduleStartup, setScheduleStartup] = useState(false);
-  const [scheduleEnabled, setScheduleEnabled] = useState(true);
-
-  const [libraryView, setLibraryView] = useState<LibraryView>('grid');
-  const [librarySearch, setLibrarySearch] = useState('');
-  const [libraryChannel, setLibraryChannel] = useState<string | null>(null);
-  const [libraryType, setLibraryType] = useState<MediaType | null>(null);
-  const [libraryStatus, setLibraryStatus] = useState<SourceStatus | null>(null);
-  const [libraryPage, setLibraryPage] = useState(1);
-  const [library, setLibrary] = useState<LibraryQueryResult>({
-    items: [],
-    total: 0,
-    page: 1,
-    pageSize: 40,
-  });
-
-  const [playlistSearch, setPlaylistSearch] = useState('');
-  const [playlistChannel, setPlaylistChannel] = useState<string | null>(null);
-  const [playlistPage, setPlaylistPage] = useState(1);
-  const [playlists, setPlaylists] = useState<{
-    items: PlaylistDto[];
-    total: number;
-    page: number;
-    pageSize: number;
-  }>({
-    items: [],
-    total: 0,
-    page: 1,
-    pageSize: 30,
-  });
-  const [selectedPlaylist, setSelectedPlaylist] = useState<PlaylistDto | null>(null);
-  const [playlistMembers, setPlaylistMembers] = useState<PlaylistMembersResult | null>(null);
-  const pendingOperations = usePendingOperations();
-  const busy = startupPending
-    ? 'startup'
-    : (pendingOperations.pendingOperations.values().next().value ?? null);
-
-  const refreshCore = useCallback(async () => {
-    const [foundationStatus, accountItems, channelItems, destinationItems, tools, summary] =
-      await Promise.all([
-        window.ytbm.getFoundationStatus(),
-        window.ytbm.listAccounts(),
-        window.ytbm.listChannels(),
-        window.ytbm.listDestinations(),
-        window.ytbm.getToolDiagnostics(),
-        window.ytbm.getDashboardSummary(),
-      ]);
-    setFoundation(foundationStatus);
-    setAccounts(accountItems);
-    setChannels(channelItems);
-    setDestinations(destinationItems);
-    setToolDiagnostics(tools);
-    setDashboard(summary);
-  }, []);
-
+function useInternalRouteNavigation(
+  onNavigate: (route: AppRoute) => void,
+  onFallback: (message: string) => void,
+): void {
   useEffect(() => {
     let active = true;
     const routeEvents = createLatestEventGuard();
-
     const resolveContext = async (
       internalRoute: Parameters<typeof resolveInternalRoute>[0],
     ): Promise<InternalRouteResolutionContext> => {
@@ -550,7 +439,6 @@ function LegacyRouteOutlet({
           return {};
       }
     };
-
     const navigateFromInternalRoute = async (
       internalRoute: Parameters<typeof resolveInternalRoute>[0],
       isLatestEvent: () => boolean,
@@ -563,9 +451,8 @@ function LegacyRouteOutlet({
       }
       if (!active || !isLatestEvent()) return;
       onNavigate(resolution.route);
-      if (resolution.fallbackMessage !== null) setNotice(resolution.fallbackMessage);
+      if (resolution.fallbackMessage !== null) onFallback(resolution.fallbackMessage);
     };
-
     const unsubscribe = window.ytbm.onInternalRoute((internalRoute) => {
       void navigateFromInternalRoute(internalRoute, routeEvents.begin());
     });
@@ -574,9 +461,169 @@ function LegacyRouteOutlet({
       routeEvents.invalidate();
       unsubscribe();
     };
-  }, [onNavigate]);
+  }, [onFallback, onNavigate]);
+}
+
+export function App() {
+  const [route, setRoute] = useState<AppRoute>(defaultAppRoute);
+  const [notice, setNotice] = useState<string | null>(null);
+  const showFallback = useCallback((message: string) => setNotice(message), []);
+  useInternalRouteNavigation(setRoute, showFallback);
+  const openRecoveryFromHome = useCallback((): void => {
+    setRoute({ area: 'settings', category: 'recovery' });
+  }, []);
+  return (
+    <AppShell route={route} onNavigate={setRoute}>
+      <>
+        {route.area === 'home' ? (
+          <div className="content">
+            {notice !== null ? (
+              <div className="notice notice--success" role="status">
+                {notice}
+                <button onClick={() => setNotice(null)} aria-label="Dismiss message">
+                  ×
+                </button>
+              </div>
+            ) : null}
+            <HomeScreen onNavigate={setRoute} onOpenRecovery={openRecoveryFromHome} />
+          </div>
+        ) : (
+          <LegacyRouteOutlet
+            route={route}
+            onNavigate={setRoute}
+            notice={notice}
+            onNotice={setNotice}
+          />
+        )}
+      </>
+    </AppShell>
+  );
+}
+
+function LegacyRouteOutlet({
+  route,
+  onNavigate,
+  notice,
+  onNotice: setNotice,
+}: {
+  route: AppRoute;
+  onNavigate(route: AppRoute): void;
+  notice: string | null;
+  onNotice(message: string | null): void;
+}) {
+  const section = appRouteToLegacySection(route);
+  const routeTabPanelProps = localRouteTabPanelProps(route);
+  const setSection = useCallback(
+    (nextSection: LegacySection) => onNavigate(legacySectionToAppRoute(nextSection)),
+    [onNavigate],
+  );
+  const [foundation, setFoundation] = useState<FoundationStatus | null>(null);
+  const [accounts, setAccounts] = useState<AccountDto[]>([]);
+  const [channels, setChannels] = useState<ChannelDto[]>([]);
+  const [startupPending, setStartupPending] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [oauthFlow, setOAuthFlow] = useState<OAuthFlowDto | null>(null);
+  const [syncJobs, setSyncJobs] = useState<Record<string, SourceSyncJobDto>>({});
+  const [destinations, setDestinations] = useState<DestinationDto[]>([]);
+  const [backupSettings, setBackupSettings] = useState<Record<string, ChannelBackupSettingsDto>>(
+    {},
+  );
+  const [backupRuns, setBackupRuns] = useState<BackupRunDto[]>([]);
+  const [queue, setQueue] = useState<QueueSnapshot | null>(null);
+  const [selectedQueueSection, setQueueSection] = useState<QueueSection>('ACTIVE');
+  const queueSection = appRouteToQueueSection(route, selectedQueueSection);
+  const queueRouteScope =
+    route.area === 'activity' ? `${route.view}:${route.entityId ?? ''}` : 'inactive';
+  const [queuePageState, setQueuePageState] = useState({ scope: queueRouteScope, page: 1 });
+  const queuePage = queuePageState.scope === queueRouteScope ? queuePageState.page : 1;
+  const setQueuePage = useCallback(
+    (page: number): void => setQueuePageState({ scope: queueRouteScope, page }),
+    [queueRouteScope],
+  );
+  const [mediaDetails, setMediaDetails] = useState<MediaBackupDetails | null>(null);
+  const [toolDiagnostics, setToolDiagnostics] = useState<ToolDiagnostics | null>(null);
+  const [recovery, setRecovery] = useState<RecoverySessionDto | null>(null);
+  const [schedules, setSchedules] = useState<ScheduleDto[]>([]);
+  const [integrity, setIntegrity] = useState<IntegrityOverview | null>(null);
+  const [integrityScope, setIntegrityScope] = useState('ALL');
+  const [scheduleScope, setScheduleScope] = useState<string>('GLOBAL');
+  const [scheduleFrequency, setScheduleFrequency] = useState<ScheduleFrequency>('DAILY');
+  const [scheduleTime, setScheduleTime] = useState('02:00');
+  const [scheduleWeekday, setScheduleWeekday] = useState(1);
+  const [scheduleEveryHours, setScheduleEveryHours] = useState(6);
+  const [scheduleCatchUp, setScheduleCatchUp] = useState(true);
+  const [scheduleStartup, setScheduleStartup] = useState(false);
 
   useEffect(() => {
+    if (section !== 'recovery' || recovery !== null) return;
+    let active = true;
+    void window.ytbm
+      .getLatestRecoverySession()
+      .then(async (session) => session ?? window.ytbm.createRecoverySession())
+      .then((session) => {
+        if (active) setRecovery(session);
+      })
+      .catch((caught: unknown) => {
+        if (active) setError(safeMessage(caught));
+      });
+    return () => {
+      active = false;
+    };
+  }, [recovery, section]);
+  const [scheduleEnabled, setScheduleEnabled] = useState(true);
+
+  const [libraryView, setLibraryView] = useState<LibraryView>('grid');
+  const [librarySearch, setLibrarySearch] = useState('');
+  const [libraryChannel, setLibraryChannel] = useState<string | null>(null);
+  const [libraryType, setLibraryType] = useState<MediaType | null>(null);
+  const [libraryStatus, setLibraryStatus] = useState<SourceStatus | null>(null);
+  const [libraryPage, setLibraryPage] = useState(1);
+  const [library, setLibrary] = useState<LibraryQueryResult>({
+    items: [],
+    total: 0,
+    page: 1,
+    pageSize: 40,
+  });
+
+  const [playlistSearch, setPlaylistSearch] = useState('');
+  const [playlistChannel, setPlaylistChannel] = useState<string | null>(null);
+  const [playlistPage, setPlaylistPage] = useState(1);
+  const [playlists, setPlaylists] = useState<{
+    items: PlaylistDto[];
+    total: number;
+    page: number;
+    pageSize: number;
+  }>({
+    items: [],
+    total: 0,
+    page: 1,
+    pageSize: 30,
+  });
+  const [selectedPlaylist, setSelectedPlaylist] = useState<PlaylistDto | null>(null);
+  const [playlistMembers, setPlaylistMembers] = useState<PlaylistMembersResult | null>(null);
+  const pendingOperations = usePendingOperations();
+  const busy = startupPending
+    ? 'startup'
+    : (pendingOperations.pendingOperations.values().next().value ?? null);
+
+  const refreshCore = useCallback(async () => {
+    const [foundationStatus, accountItems, channelItems, destinationItems, tools] =
+      await Promise.all([
+        window.ytbm.getFoundationStatus(),
+        window.ytbm.listAccounts(),
+        window.ytbm.listChannels(),
+        window.ytbm.listDestinations(),
+        window.ytbm.getToolDiagnostics(),
+      ]);
+    setFoundation(foundationStatus);
+    setAccounts(accountItems);
+    setChannels(channelItems);
+    setDestinations(destinationItems);
+    setToolDiagnostics(tools);
+  }, []);
+
+  useEffect(() => {
+    if (section === 'dashboard' || !startupPending) return;
     let active = true;
     void Promise.all([
       window.ytbm.getFoundationStatus(),
@@ -584,16 +631,14 @@ function LegacyRouteOutlet({
       window.ytbm.listChannels(),
       window.ytbm.listDestinations(),
       window.ytbm.getToolDiagnostics(),
-      window.ytbm.getDashboardSummary(),
     ])
-      .then(([foundationStatus, accountItems, channelItems, destinationItems, tools, summary]) => {
+      .then(([foundationStatus, accountItems, channelItems, destinationItems, tools]) => {
         if (!active) return;
         setFoundation(foundationStatus);
         setAccounts(accountItems);
         setChannels(channelItems);
         setDestinations(destinationItems);
         setToolDiagnostics(tools);
-        setDashboard(summary);
       })
       .catch((caught: unknown) => {
         if (active) setError(safeMessage(caught));
@@ -604,7 +649,7 @@ function LegacyRouteOutlet({
     return () => {
       active = false;
     };
-  }, []);
+  }, [section, startupPending]);
 
   useOAuthStatusController<OAuthFlowDto>({
     enabled: oauthFlow?.status === 'PENDING',
@@ -1055,7 +1100,7 @@ function LegacyRouteOutlet({
         : ((await window.ytbm.getLatestRecoverySession()) ??
           (await window.ytbm.createRecoverySession()));
       setRecovery(session);
-      setSection('recovery');
+      onNavigate({ area: 'settings', category: 'recovery' });
     } catch (caught) {
       setError(safeMessage(caught));
     } finally {
@@ -1227,15 +1272,17 @@ function LegacyRouteOutlet({
 
   return (
     <div className="content legacy-route-outlet">
-      <header className="legacy-page-header">
-        <div>
-          <h1>{routeTitle(route)}</h1>
-          {route.area === 'settings' && route.category !== 'general' ? (
-            <p>{route.category.charAt(0).toUpperCase() + route.category.slice(1)}</p>
-          ) : null}
-        </div>
-        <RouteLocalNavigation route={route} onNavigate={onNavigate} />
-      </header>
+      {section !== 'dashboard' ? (
+        <header className="legacy-page-header">
+          <div>
+            <h1>{routeTitle(route)}</h1>
+            {route.area === 'settings' && route.category !== 'general' ? (
+              <p>{route.category.charAt(0).toUpperCase() + route.category.slice(1)}</p>
+            ) : null}
+          </div>
+          <RouteLocalNavigation route={route} onNavigate={onNavigate} />
+        </header>
+      ) : null}
 
       {notice !== null ? (
         <div className="notice notice--success" role="status">
@@ -1245,6 +1292,7 @@ function LegacyRouteOutlet({
           </button>
         </div>
       ) : null}
+
       {error !== null ? (
         <div className="notice notice--error" role="alert">
           {error}
@@ -1254,81 +1302,8 @@ function LegacyRouteOutlet({
         </div>
       ) : null}
 
-      {busy === 'startup' ? (
+      {busy === 'startup' && section !== 'dashboard' ? (
         <div className="loading-panel">Connecting to the backup worker…</div>
-      ) : null}
-
-      {busy !== 'startup' && section === 'dashboard' ? (
-        <section>
-          <div className="section-heading">
-            <div>
-              <h2>Backup health</h2>
-              <p>Verified coverage across every intended local and Google Drive destination.</p>
-            </div>
-          </div>
-          {dashboard === null ? (
-            <div className="loading-panel">Loading backup health…</div>
-          ) : dashboard.mediaCount === 0 && destinations.length === 0 ? (
-            <div className="welcome-panel">
-              <p className="eyebrow">Get started</p>
-              <h2>Set up a new archive or restore an existing one</h2>
-              <p>
-                Recovery scans only app-created manifests and sidecars. It does not download from
-                YouTube or modify backup files.
-              </p>
-              <div className="section-actions">
-                <button className="button button--primary" onClick={() => setSection('accounts')}>
-                  Set up new backup
-                </button>
-                <button className="button button--secondary" onClick={() => void openRecovery()}>
-                  Restore existing backup
-                </button>
-              </div>
-            </div>
-          ) : (
-            <>
-              <div className="dashboard-grid">
-                <article>
-                  <small>Selected channels</small>
-                  <strong>{dashboard.selectedChannelCount}</strong>
-                </article>
-                <article>
-                  <small>Catalog media</small>
-                  <strong>{dashboard.mediaCount}</strong>
-                </article>
-                <article>
-                  <small>Verified copies</small>
-                  <strong>
-                    {dashboard.verifiedCopyCount} / {dashboard.intendedCopyCount}
-                  </strong>
-                </article>
-                <article>
-                  <small>Verified bytes</small>
-                  <strong>{formatBytes(dashboard.verifiedBytes)}</strong>
-                </article>
-                <article>
-                  <small>Local verified</small>
-                  <strong>{dashboard.localVerifiedCount}</strong>
-                </article>
-                <article>
-                  <small>Drive verified</small>
-                  <strong>{dashboard.driveVerifiedCount}</strong>
-                </article>
-                <article>
-                  <small>Pending</small>
-                  <strong>{dashboard.pendingCopyCount}</strong>
-                </article>
-                <article>
-                  <small>Failed</small>
-                  <strong>{dashboard.failedCopyCount}</strong>
-                </article>
-              </div>
-              <p className="dashboard-last-run">
-                Last completed backup activity: {formatDate(dashboard.lastBackupAt)}
-              </p>
-            </>
-          )}
-        </section>
       ) : null}
 
       {busy !== 'startup' && section === 'accounts' ? (

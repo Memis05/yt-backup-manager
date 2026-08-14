@@ -9,6 +9,11 @@ import {
   type ElectronApplication,
   type Page,
 } from '@playwright/test';
+import {
+  acquireWorkerDatabaseOwnership,
+  openWorkerDatabase,
+  type WorkerDatabase,
+} from '@ytbm/database/worker';
 import { WorkerRpcClient, createUserScopedEndpoints } from '@ytbm/ipc';
 import { RpcAuthTokenStore } from '@ytbm/security';
 
@@ -19,6 +24,17 @@ export interface PackagedDesktop {
   localData: string;
   directory: string;
   close(): Promise<void>;
+}
+
+export interface PackagedDesktopSeedContext {
+  database: WorkerDatabase;
+  directory: string;
+  userData: string;
+  localData: string;
+}
+
+export interface PackagedDesktopOptions {
+  prepareDatabase?(context: PackagedDesktopSeedContext): Promise<void> | void;
 }
 
 async function stopWorker(userData: string, localData: string): Promise<void> {
@@ -67,10 +83,27 @@ async function closeElectronApplication(
   applicationProcess.kill('SIGKILL');
 }
 
-export async function launchPackagedDesktop(): Promise<PackagedDesktop> {
+export async function launchPackagedDesktop(
+  options: PackagedDesktopOptions = {},
+): Promise<PackagedDesktop> {
   const directory = await mkdtemp(join(tmpdir(), 'ytbm-electron-e2e-'));
   const userData = join(directory, 'user-data');
   const localData = join(directory, 'local-data');
+  if (options.prepareDatabase !== undefined) {
+    const database = openWorkerDatabase({
+      databasePath: join(userData, 'app.db'),
+      ownership: acquireWorkerDatabaseOwnership(),
+      migrationsFolder: resolve(import.meta.dirname, '../../../packages/database/drizzle'),
+    });
+    try {
+      await options.prepareDatabase({ database, directory, userData, localData });
+    } catch (error) {
+      database.close();
+      await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      throw error;
+    }
+    database.close();
+  }
   const executablePath = resolve(
     import.meta.dirname,
     '../release/win-unpacked/YouTube Backup Manager.exe',

@@ -153,11 +153,13 @@ export function Progress({
 }
 
 export interface SkeletonProps extends HTMLAttributes<HTMLDivElement> {
+  announce?: boolean;
   label?: string;
   lines?: number;
 }
 
 export function Skeleton({
+  announce = true,
   className,
   label = 'Loading content',
   lines = 3,
@@ -170,11 +172,11 @@ export function Skeleton({
       {...skeletonProps}
       className={cx('ui-skeleton-region', className)}
       style={style}
-      role="status"
-      aria-label={label}
-      aria-live="polite"
+      {...(announce
+        ? { role: 'status', 'aria-label': label, 'aria-live': 'polite' as const }
+        : { 'aria-hidden': true })}
     >
-      <span className="ui-visually-hidden">{label}</span>
+      {announce ? <span className="ui-visually-hidden">{label}</span> : null}
       <span className="ui-skeleton" aria-hidden="true">
         <span className="ui-skeleton__media" />
         {Array.from({ length: count }, (_, index) => (

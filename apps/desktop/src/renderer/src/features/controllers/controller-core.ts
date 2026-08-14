@@ -100,8 +100,12 @@ function createSingleFlightRunner<Result>(input: {
     }
 
     const requestCycle = Promise.resolve()
-      .then(() => input.request())
-      .then((result) => {
+      .then(async () => {
+        // React Strict Mode may clean up an immediate controller before this
+        // microtask starts. Re-check ownership so the discarded effect cannot
+        // issue a duplicate request alongside its replacement.
+        if (!input.isActive()) return;
+        const result = await input.request();
         if (input.isActive()) input.onSuccess(result);
       })
       .catch((error: unknown) => {
