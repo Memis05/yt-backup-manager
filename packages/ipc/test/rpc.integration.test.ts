@@ -2,7 +2,12 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { AppSettingsSchema } from '@ytbm/core';
 import { describe, expect, it } from 'vitest';
 
-import { WorkerRpcClient, WorkerRpcServer, type WorkerRpcHandlers } from '../src';
+import {
+  WORKER_RPC_PROTOCOL_VERSION,
+  WorkerRpcClient,
+  WorkerRpcServer,
+  type WorkerRpcHandlers,
+} from '../src';
 
 function endpoint(): string {
   if (process.platform === 'win32') return `\\\\.\\pipe\\ytbm-rpc-test-${randomUUID()}`;
@@ -52,6 +57,7 @@ const handlers: WorkerRpcHandlers = {
     startedAt: '2026-08-11T00:00:00.000Z',
     uptimeMs: 100,
   }),
+  'worker.protocol': () => ({ version: WORKER_RPC_PROTOCOL_VERSION }),
   'worker.scheduledWake': ({ requestedAt }) => ({
     accepted: true,
     deduplicated: false,
@@ -203,6 +209,9 @@ describe('authenticated worker RPC transport', () => {
     await server.start();
 
     await expect(client.request('worker.health', {})).resolves.toMatchObject({ instanceId });
+    await expect(client.request('worker.protocol', {})).resolves.toEqual({
+      version: WORKER_RPC_PROTOCOL_VERSION,
+    });
 
     client.close();
     await server.stop();

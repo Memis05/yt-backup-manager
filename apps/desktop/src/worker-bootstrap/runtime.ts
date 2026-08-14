@@ -19,7 +19,12 @@ import {
   openWorkerDatabase,
   type WorkerDatabase,
 } from '@ytbm/database/worker';
-import { WorkerRpcServer, createUserScopedEndpoints, type WorkerRpcHandlers } from '@ytbm/ipc';
+import {
+  WORKER_RPC_PROTOCOL_VERSION,
+  WorkerRpcServer,
+  createUserScopedEndpoints,
+  type WorkerRpcHandlers,
+} from '@ytbm/ipc';
 import { NamedPipeWorkerSingleton, WorkerAlreadyRunningError } from '@ytbm/job-engine';
 import { RecoveryService } from '@ytbm/recovery';
 import {
@@ -201,6 +206,7 @@ export class WorkerRuntime {
       ).loadOrCreate();
       const handlers: WorkerRpcHandlers = {
         'worker.health': () => this.workerHealth(),
+        'worker.protocol': () => ({ version: WORKER_RPC_PROTOCOL_VERSION }),
         'worker.scheduledWake': ({ scheduleId, requestedAt }) => {
           this.logger.info('Scheduled worker wake received', { scheduleId, requestedAt });
           return this.scheduling!.trigger(scheduleId, Date.parse(requestedAt));

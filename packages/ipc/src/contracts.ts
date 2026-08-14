@@ -54,10 +54,21 @@ import { z } from 'zod';
 
 const EmptyParamsSchema = z.object({}).strict();
 
+/** Increment whenever a worker RPC method or result changes incompatibly. */
+export const WORKER_RPC_PROTOCOL_VERSION = 1;
+
+export const WorkerRpcProtocolSchema = z
+  .object({ version: z.number().int().nonnegative() })
+  .strict();
+
 export const WorkerRpcContracts = {
   'worker.health': {
     params: EmptyParamsSchema,
     result: WorkerHealthSchema,
+  },
+  'worker.protocol': {
+    params: EmptyParamsSchema,
+    result: WorkerRpcProtocolSchema,
   },
   'worker.scheduledWake': {
     params: z

@@ -3,7 +3,12 @@ import { createConnection } from 'node:net';
 
 import { type App } from 'electron';
 
-import { WorkerRpcClient, createUserScopedEndpoints } from '@ytbm/ipc';
+import {
+  RpcProtocolError,
+  WORKER_RPC_PROTOCOL_VERSION,
+  WorkerRpcClient,
+  createUserScopedEndpoints,
+} from '@ytbm/ipc';
 import { RpcAuthTokenStore, type StructuredLogger } from '@ytbm/security';
 
 import type { RuntimeConfig } from '../config/runtime';
@@ -35,6 +40,26 @@ export async function waitForWorkerEndpointRelease(
   throw new Error('The outdated backup worker did not release its process lock in time.');
 }
 
+type WorkerControlClient = Pick<WorkerRpcClient, 'request'>;
+
+export async function readWorkerRpcProtocolVersion(client: WorkerControlClient): Promise<number> {
+  try {
+    return (await client.request('worker.protocol', {})).version;
+  } catch (error) {
+    if (error instanceof RpcProtocolError && error.code === 'METHOD_NOT_FOUND') return 0;
+    throw error;
+  }
+}
+
+export async function requestWorkerShutdownForReplacement(
+  client: WorkerControlClient,
+): Promise<'IMMEDIATE' | 'WHEN_IDLE'> {
+  const shutdown = await client.request('worker.shutdownIfIdle', {});
+  if (shutdown.accepted) return 'IMMEDIATE';
+  await client.request('worker.shutdownWhenIdle', {});
+  return 'WHEN_IDLE';
+}
+
 export class DesktopWorkerManager {
   private client: WorkerRpcClient | null = null;
   private spawnedProcess: ChildProcess | null = null;
@@ -63,13 +88,30 @@ export class DesktopWorkerManager {
       this.logger.info('Connected to spawned worker');
     }
 
+    let protocolVersion = await readWorkerRpcProtocolVersion(client);
+    if (protocolVersion > WORKER_RPC_PROTOCOL_VERSION) {
+      throw new Error(
+        'The running backup worker is newer than this desktop application. Start the matching application version.',
+      );
+    }
+    if (protocolVersion < WORKER_RPC_PROTOCOL_VERSION) {
+      if (!connectedToExistingWorker) {
+        throw new Error('The bundled backup worker uses an incompatible RPC protocol.');
+      }
+      const shutdownMode = await requestWorkerShutdownForReplacement(client);
+      this.logger.info('Waiting for an outdated worker to stop safely', { shutdownMode });
+      await this.restartWorker(client, endpoints.singleton);
+      connectedToExistingWorker = false;
+      protocolVersion = await readWorkerRpcProtocolVersion(client);
+      this.logger.info('Replaced outdated worker with the current RPC protocol', {
+        protocolVersion,
+      });
+    }
+
     if (connectedToExistingWorker && this.config.environment === 'development') {
       const shutdown = await client.request('worker.shutdownIfIdle', {});
       if (shutdown.accepted) {
-        await waitForWorkerEndpointRelease(endpoints.singleton);
-        client.close();
-        this.spawnWorker();
-        await client.waitUntilConnected(10_000);
+        await this.restartWorker(client, endpoints.singleton);
         connectedToExistingWorker = false;
         this.logger.info('Replaced idle development worker to load the current application code');
       } else {
@@ -89,10 +131,7 @@ export class DesktopWorkerManager {
           { cause: error },
         );
       }
-      await waitForWorkerEndpointRelease(endpoints.singleton);
-      client.close();
-      this.spawnWorker();
-      await client.waitUntilConnected(10_000);
+      await this.restartWorker(client, endpoints.singleton);
       await this.configureGoogleOAuth(client);
       this.logger.info('Replaced an outdated idle worker to refresh OAuth configuration');
     }
@@ -115,6 +154,17 @@ export class DesktopWorkerManager {
       clientId: this.config.googleOAuthClientId,
       clientSecret: this.config.googleOAuthClientSecret,
     });
+  }
+
+  private async restartWorker(client: WorkerRpcClient, singletonEndpoint: string): Promise<void> {
+    await waitForWorkerEndpointRelease(singletonEndpoint);
+    client.close();
+    this.spawnWorker();
+    await client.waitUntilConnected(10_000);
+    const protocolVersion = await readWorkerRpcProtocolVersion(client);
+    if (protocolVersion !== WORKER_RPC_PROTOCOL_VERSION) {
+      throw new Error('The replacement backup worker uses an incompatible RPC protocol.');
+    }
   }
 
   private spawnWorker(): void {

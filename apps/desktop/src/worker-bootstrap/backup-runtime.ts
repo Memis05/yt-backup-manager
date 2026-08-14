@@ -383,7 +383,11 @@ export class LocalBackupRuntime {
     return true;
   }
 
-  public prepareShutdownWhenIdle(): void {}
+  public prepareShutdownWhenIdle(): void {
+    if (this.destinationProbeTimer !== null) clearInterval(this.destinationProbeTimer);
+    this.destinationProbeTimer = null;
+    this.engine.prepareShutdownWhenIdle();
+  }
 
   public lastIntegrityStartedAt(): number | null {
     const latest = this.options.database.sqlite

@@ -118,6 +118,7 @@ export class DurableJobEngine {
   private pollTimer: NodeJS.Timeout | null = null;
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private stopping = false;
+  private draining = false;
 
   public constructor(private readonly options: DurableJobEngineOptions) {
     this.now = options.now ?? Date.now;
@@ -131,6 +132,7 @@ export class DurableJobEngine {
   public start(): void {
     if (this.pollTimer !== null) return;
     this.stopping = false;
+    this.draining = false;
     const now = this.now();
     this.options.repository.recoverExpiredLeases(now);
     this.options.repository.requeueInterrupted(now);
@@ -146,7 +148,11 @@ export class DurableJobEngine {
   }
 
   public isIdle(): boolean {
-    return this.active.size === 0 && !this.options.repository.hasExecutionWork();
+    return this.active.size === 0 && (this.draining || !this.options.repository.hasExecutionWork());
+  }
+
+  public prepareShutdownWhenIdle(): void {
+    this.draining = true;
   }
 
   public async stop(): Promise<void> {
@@ -176,6 +182,8 @@ export class DurableJobEngine {
         active.controller.abort(new Error(requested));
       }
     }
+
+    if (this.draining) return;
 
     for (const [pool, limit] of Object.entries(this.options.concurrency)) {
       let running = poolCounts.get(pool) ?? 0;
