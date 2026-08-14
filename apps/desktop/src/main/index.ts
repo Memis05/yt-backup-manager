@@ -250,6 +250,7 @@ async function runDesktop(): Promise<void> {
       return event.senderFrame === window.webContents.mainFrame;
     },
     applySystemSettings,
+    () => workerManager.waitForCurrentProtocol(),
   );
 
   secureWebContentsNavigation(window.webContents);

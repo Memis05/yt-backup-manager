@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { RpcProtocolError, type WorkerRpcClient } from '@ytbm/ipc';
+import { RpcProtocolError, WORKER_RPC_PROTOCOL_VERSION, type WorkerRpcClient } from '@ytbm/ipc';
 
 import {
   readWorkerRpcProtocolVersion,
@@ -42,6 +42,10 @@ async function listen(server: Server, path: string): Promise<void> {
 }
 
 describe('DesktopWorkerManager shutdown coordination', () => {
+  it('requires the worker protocol generation that includes Activity RPC methods', () => {
+    expect(WORKER_RPC_PROTOCOL_VERSION).toBe(2);
+  });
+
   it('recognizes a worker from before protocol negotiation as version zero', async () => {
     const client = {
       request: async () => {

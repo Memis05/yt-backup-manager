@@ -63,6 +63,7 @@ export async function requestWorkerShutdownForReplacement(
 export class DesktopWorkerManager {
   private client: WorkerRpcClient | null = null;
   private spawnedProcess: ChildProcess | null = null;
+  private currentProtocolPromise: Promise<void> = Promise.resolve();
 
   public constructor(
     private readonly app: App,
@@ -99,13 +100,25 @@ export class DesktopWorkerManager {
         throw new Error('The bundled backup worker uses an incompatible RPC protocol.');
       }
       const shutdownMode = await requestWorkerShutdownForReplacement(client);
-      this.logger.info('Waiting for an outdated worker to stop safely', { shutdownMode });
-      await this.restartWorker(client, endpoints.singleton);
-      connectedToExistingWorker = false;
-      protocolVersion = await readWorkerRpcProtocolVersion(client);
-      this.logger.info('Replaced outdated worker with the current RPC protocol', {
-        protocolVersion,
-      });
+      if (shutdownMode === 'IMMEDIATE') {
+        this.logger.info('Replacing an idle outdated worker');
+        await this.restartWorker(client, endpoints.singleton);
+        connectedToExistingWorker = false;
+        protocolVersion = await readWorkerRpcProtocolVersion(client);
+        this.logger.info('Replaced outdated worker with the current RPC protocol', {
+          protocolVersion,
+        });
+      } else {
+        this.logger.info('Draining an outdated worker in the background', { shutdownMode });
+        this.currentProtocolPromise = this.replaceOutdatedWorker(client, endpoints.singleton);
+        void this.currentProtocolPromise.catch((error: unknown) => {
+          this.logger.error('Background worker replacement failed', {
+            exceptionType: error instanceof Error ? error.name : typeof error,
+          });
+        });
+        this.client = client;
+        return client;
+      }
     }
 
     if (connectedToExistingWorker && this.config.environment === 'development') {
@@ -149,6 +162,10 @@ export class DesktopWorkerManager {
     return this.spawnedProcess?.pid ?? null;
   }
 
+  public waitForCurrentProtocol(): Promise<void> {
+    return this.currentProtocolPromise;
+  }
+
   public terminateSpawnedWorkerForTest(): void {
     if (this.config.environment !== 'test') return;
     if (this.spawnedProcess?.exitCode === null) this.spawnedProcess.kill();
@@ -159,6 +176,17 @@ export class DesktopWorkerManager {
     return client.request('accounts.oauthConfigure', {
       clientId: this.config.googleOAuthClientId,
       clientSecret: this.config.googleOAuthClientSecret,
+    });
+  }
+
+  private async replaceOutdatedWorker(
+    client: WorkerRpcClient,
+    singletonEndpoint: string,
+  ): Promise<void> {
+    await this.restartWorker(client, singletonEndpoint);
+    await this.configureGoogleOAuth(client);
+    this.logger.info('Replaced drained worker with the current RPC protocol', {
+      protocolVersion: WORKER_RPC_PROTOCOL_VERSION,
     });
   }
 

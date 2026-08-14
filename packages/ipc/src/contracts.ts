@@ -72,8 +72,13 @@ import { z } from 'zod';
 
 const EmptyParamsSchema = z.object({}).strict();
 
-/** Increment whenever a worker RPC method or result changes incompatibly. */
-export const WORKER_RPC_PROTOCOL_VERSION = 1;
+/**
+ * Increment whenever the current desktop cannot safely use an already-running older worker.
+ * This includes additive methods that the current desktop requires, not only changed results.
+ *
+ * Version 2 adds the Phase 7B.5 Activity RPC surface.
+ */
+export const WORKER_RPC_PROTOCOL_VERSION = 2;
 
 export const WorkerRpcProtocolSchema = z
   .object({ version: z.number().int().nonnegative() })

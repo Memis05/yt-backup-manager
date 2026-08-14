@@ -53,6 +53,7 @@ export function registerDesktopIpcHandlers(
   openKnownFolder: (path: string) => Promise<void>,
   authorizeIpcEvent: AuthorizeIpcEvent,
   onSettingsUpdated?: (settings: AppSettings) => void,
+  waitForActivityWorker: () => Promise<void> = async () => undefined,
 ): () => void {
   const handle = (
     channel: DesktopIpcChannel,
@@ -181,30 +182,38 @@ export function registerDesktopIpcHandlers(
   handle(DESKTOP_IPC_CHANNELS.controlBackupRun, async (input) =>
     worker.request('backup.controlRun', input as { runId: string; action: RunControlAction }),
   );
-  handle(DESKTOP_IPC_CHANNELS.activityOperations, async (input) =>
-    worker.request('activity.operations', input as ActivityOperationsQuery),
-  );
-  handle(DESKTOP_IPC_CHANNELS.activityOperationDetails, async (input) =>
-    worker.request('activity.operationDetails', input as ActivityOperationDetailsQuery),
-  );
-  handle(DESKTOP_IPC_CHANNELS.controlActivityOperation, async (input) =>
-    worker.request('activity.controlOperation', input as ActivityOperationControl),
-  );
-  handle(DESKTOP_IPC_CHANNELS.activityRunHistory, async (input) =>
-    worker.request('activity.runHistory', input as BackupRunHistoryQuery),
-  );
-  handle(DESKTOP_IPC_CHANNELS.activityRunDetails, async (input) =>
-    worker.request('activity.runDetails', input as ActivityRunDetailsQuery),
-  );
-  handle(DESKTOP_IPC_CHANNELS.activityLog, async (input) =>
-    worker.request('activity.log', input as ActivityLogQuery),
-  );
-  handle(DESKTOP_IPC_CHANNELS.activityAttention, async (input) =>
-    worker.request('activity.attention', input as ActivityAttentionQuery),
-  );
-  handle(DESKTOP_IPC_CHANNELS.activityResolveEntity, async (input) =>
-    worker.request('activity.resolveEntity', input as { entityId: string }),
-  );
+  handle(DESKTOP_IPC_CHANNELS.activityOperations, async (input) => {
+    await waitForActivityWorker();
+    return worker.request('activity.operations', input as ActivityOperationsQuery);
+  });
+  handle(DESKTOP_IPC_CHANNELS.activityOperationDetails, async (input) => {
+    await waitForActivityWorker();
+    return worker.request('activity.operationDetails', input as ActivityOperationDetailsQuery);
+  });
+  handle(DESKTOP_IPC_CHANNELS.controlActivityOperation, async (input) => {
+    await waitForActivityWorker();
+    return worker.request('activity.controlOperation', input as ActivityOperationControl);
+  });
+  handle(DESKTOP_IPC_CHANNELS.activityRunHistory, async (input) => {
+    await waitForActivityWorker();
+    return worker.request('activity.runHistory', input as BackupRunHistoryQuery);
+  });
+  handle(DESKTOP_IPC_CHANNELS.activityRunDetails, async (input) => {
+    await waitForActivityWorker();
+    return worker.request('activity.runDetails', input as ActivityRunDetailsQuery);
+  });
+  handle(DESKTOP_IPC_CHANNELS.activityLog, async (input) => {
+    await waitForActivityWorker();
+    return worker.request('activity.log', input as ActivityLogQuery);
+  });
+  handle(DESKTOP_IPC_CHANNELS.activityAttention, async (input) => {
+    await waitForActivityWorker();
+    return worker.request('activity.attention', input as ActivityAttentionQuery);
+  });
+  handle(DESKTOP_IPC_CHANNELS.activityResolveEntity, async (input) => {
+    await waitForActivityWorker();
+    return worker.request('activity.resolveEntity', input as { entityId: string });
+  });
   handle(DESKTOP_IPC_CHANNELS.queueSnapshot, async (input) =>
     worker.request('jobs.snapshot', input as QueueQuery),
   );
