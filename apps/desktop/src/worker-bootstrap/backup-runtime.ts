@@ -14,6 +14,8 @@ import {
   type BackupStartResult,
   type BackupRunTrigger,
   type ChannelBackupSettingsDto,
+  type ChannelQualityChangePreview,
+  type ChannelQualityChangeResult,
   type DestinationDto,
   type DashboardSummary,
   type IntegrityOverview,
@@ -487,6 +489,42 @@ export class LocalBackupRuntime {
       input.destinationIds,
       settings.defaultQualityProfile,
     );
+  }
+
+  public async previewChannelQualityChange(
+    channelId: string,
+    qualityProfileOverride: QualityProfile | null,
+  ): Promise<ChannelQualityChangePreview> {
+    const settings = await this.options.settings();
+    return this.repository.previewChannelQualityChange(
+      channelId,
+      qualityProfileOverride,
+      settings.defaultQualityProfile,
+    );
+  }
+
+  public async applyChannelQualityChange(input: {
+    channelId: string;
+    qualityProfileOverride: QualityProfile | null;
+    policy: 'NEW_MEDIA_ONLY';
+  }): Promise<ChannelQualityChangeResult> {
+    const settings = await this.options.settings();
+    const preview = this.repository.previewChannelQualityChange(
+      input.channelId,
+      input.qualityProfileOverride,
+      settings.defaultQualityProfile,
+    );
+    const current = this.repository.getChannelSettings(
+      input.channelId,
+      settings.defaultQualityProfile,
+    );
+    const updated = this.repository.setChannelSettings(
+      input.channelId,
+      input.qualityProfileOverride,
+      current.destinationIds,
+      settings.defaultQualityProfile,
+    );
+    return { settings: updated, preview, appliedPolicy: input.policy };
   }
 
   public async startBackup(

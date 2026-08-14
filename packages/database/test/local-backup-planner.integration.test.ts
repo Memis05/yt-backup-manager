@@ -127,6 +127,37 @@ function markDriveVerified(
 }
 
 describe('local backup planner', () => {
+  it('previews only known lower-quality verified copies without claiming they can be upgraded', async () => {
+    const { database, repository, channelId, mediaId, destinationA } = await fixture();
+    markVerified(database, mediaId, destinationA.id);
+
+    const preview = repository.previewChannelQualityChange(channelId, 'MAX_4K', 'MAX_1080P');
+
+    expect(preview).toMatchObject({
+      previousEffectiveQualityProfile: 'MAX_1080P',
+      targetEffectiveQualityProfile: 'MAX_4K',
+      isQualityIncrease: true,
+      eligibleMediaCount: 1,
+      eligibleCopyCount: 1,
+      upgradeExistingSupported: false,
+    });
+    expect(preview.unsupportedReason).toMatch(/cannot be replaced/i);
+  });
+
+  it('reports no eligible existing copies when a quality change is not an increase', async () => {
+    const { database, repository, channelId, mediaId, destinationA } = await fixture();
+    markVerified(database, mediaId, destinationA.id);
+
+    expect(
+      repository.previewChannelQualityChange(channelId, 'MAX_720P', 'MAX_1080P'),
+    ).toMatchObject({
+      isQualityIncrease: false,
+      eligibleMediaCount: 0,
+      eligibleCopyCount: 0,
+      upgradeExistingSupported: false,
+    });
+  });
+
   it('rejects a backup plan with zero destinations', async () => {
     const { repository, channelId, directory } = await fixture();
     repository.setChannelSettings(channelId, null, [], 'MAX_1080P');

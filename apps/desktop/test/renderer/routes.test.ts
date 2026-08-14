@@ -42,6 +42,7 @@ describe('renderer AppRoute compatibility', () => {
     [{ area: 'library', view: 'playlists', entityId: 'playlist-1' }, 'playlists'],
     [{ area: 'channels', entityId: 'channel-1', panel: 'backup' }, 'backup'],
     [{ area: 'channels', entityId: 'channel-1', panel: 'schedule' }, 'channels'],
+    [{ area: 'channels', entityId: 'channel-1', panel: 'source' }, 'channels'],
     [{ area: 'activity', view: 'active', entityId: 'job-1' }, 'queue'],
     [{ area: 'activity', view: 'attention', entityId: 'job-2' }, 'queue'],
     [{ area: 'activity', view: 'history', entityId: 'run-1' }, 'backup'],

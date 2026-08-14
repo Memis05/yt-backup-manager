@@ -85,6 +85,38 @@ export const ChannelBackupSettingsPatchSchema = z
   })
   .strict();
 
+export const ChannelQualityChangePreviewSchema = z
+  .object({
+    channelId: z.string().uuid(),
+    previousEffectiveQualityProfile: QualityProfileSchema,
+    targetEffectiveQualityProfile: QualityProfileSchema,
+    isQualityIncrease: z.boolean(),
+    eligibleMediaCount: z.number().int().nonnegative(),
+    eligibleCopyCount: z.number().int().nonnegative(),
+    upgradeExistingSupported: z.literal(false),
+    unsupportedReason: z.string().min(1).max(300),
+  })
+  .strict();
+
+export const ChannelQualityChangeRequestSchema = z
+  .object({
+    channelId: z.string().uuid(),
+    qualityProfileOverride: QualityProfileSchema.nullable(),
+  })
+  .strict();
+
+export const ChannelQualityChangeApplySchema = ChannelQualityChangeRequestSchema.extend({
+  policy: z.literal('NEW_MEDIA_ONLY'),
+}).strict();
+
+export const ChannelQualityChangeResultSchema = z
+  .object({
+    settings: ChannelBackupSettingsDtoSchema,
+    preview: ChannelQualityChangePreviewSchema,
+    appliedPolicy: z.literal('NEW_MEDIA_ONLY'),
+  })
+  .strict();
+
 export const BackupRunDtoSchema = z
   .object({
     id: z.string().uuid(),
@@ -339,6 +371,10 @@ export type FilesystemDestinationDto = z.infer<typeof FilesystemDestinationDtoSc
 export type GoogleDriveDestinationDto = z.infer<typeof GoogleDriveDestinationDtoSchema>;
 export type ChannelBackupSettingsDto = z.infer<typeof ChannelBackupSettingsDtoSchema>;
 export type ChannelBackupSettingsPatch = z.infer<typeof ChannelBackupSettingsPatchSchema>;
+export type ChannelQualityChangePreview = z.infer<typeof ChannelQualityChangePreviewSchema>;
+export type ChannelQualityChangeRequest = z.infer<typeof ChannelQualityChangeRequestSchema>;
+export type ChannelQualityChangeApply = z.infer<typeof ChannelQualityChangeApplySchema>;
+export type ChannelQualityChangeResult = z.infer<typeof ChannelQualityChangeResultSchema>;
 export type BackupRunDto = z.infer<typeof BackupRunDtoSchema>;
 export type BackupStartResult = z.infer<typeof BackupStartResultSchema>;
 export type QueueJobDto = z.infer<typeof QueueJobDtoSchema>;

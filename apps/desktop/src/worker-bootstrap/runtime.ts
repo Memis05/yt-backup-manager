@@ -292,6 +292,12 @@ export class WorkerRuntime {
         'backup.channelSettings': ({ channelId }) =>
           this.localBackup!.getChannelSettings(channelId),
         'backup.updateChannelSettings': (input) => this.localBackup!.setChannelSettings(input),
+        'backup.previewQualityChange': (input) =>
+          this.localBackup!.previewChannelQualityChange(
+            input.channelId,
+            input.qualityProfileOverride,
+          ),
+        'backup.applyQualityChange': (input) => this.localBackup!.applyChannelQualityChange(input),
         'backup.start': ({ channelId }) => this.localBackup!.startBackup(channelId),
         'backup.runs': async () => ({ runs: this.localBackup!.listRuns() }),
         'backup.controlRun': ({ runId, action }) => {

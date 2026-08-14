@@ -17,7 +17,7 @@ export type AppRoute =
   | {
       area: 'channels';
       entityId?: string;
-      panel?: 'overview' | 'backup' | 'schedule';
+      panel?: 'overview' | 'backup' | 'schedule' | 'source';
     }
   | {
       area: 'activity';

@@ -220,6 +220,16 @@ export const YTBM_API_OWNERSHIP_REGISTRY = Object.freeze({
     currentFeature: 'Backup configuration',
     targetOwner: 'features/channels/backup-controller',
   },
+  previewChannelQualityChange: {
+    legacyCaller: 'no renderer caller',
+    currentFeature: 'Backup configuration',
+    targetOwner: 'features/channels/backup-controller',
+  },
+  applyChannelQualityChange: {
+    legacyCaller: 'no renderer caller',
+    currentFeature: 'Backup configuration',
+    targetOwner: 'features/channels/backup-controller',
+  },
   startBackup: {
     legacyCaller: 'App.tsx',
     currentFeature: 'Backup configuration',

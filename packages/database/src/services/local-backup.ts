@@ -6,6 +6,7 @@ import {
   BackupRunsListResultSchema,
   BackupStartResultSchema,
   ChannelBackupSettingsDtoSchema,
+  ChannelQualityChangePreviewSchema,
   DashboardSummarySchema,
   IntegrityCheckDtoSchema,
   IntegrityOverviewSchema,
@@ -20,6 +21,7 @@ import {
   type BackupRunTrigger,
   type BackupStartResult,
   type ChannelBackupSettingsDto,
+  type ChannelQualityChangePreview,
   type AppSettings,
   type DashboardSummary,
   type IntegrityOverview,
@@ -100,6 +102,13 @@ export interface PlannedJobInput {
   errorCode?: string;
   safeMessage?: string;
 }
+
+const QUALITY_PROFILE_RANK: Readonly<Record<QualityProfile, number>> = {
+  MAX_720P: 0,
+  MAX_1080P: 1,
+  MAX_4K: 2,
+  BEST_AVAILABLE: 3,
+};
 
 export interface BackupMediaContext {
   id: string;
@@ -601,6 +610,57 @@ export class LocalBackupRepository {
       qualityProfileOverride: override,
       effectiveQualityProfile: override ?? defaultQualityProfile,
       destinationIds: destinations.map((row) => row.destination_id),
+    });
+  }
+
+  public previewChannelQualityChange(
+    channelId: string,
+    qualityProfileOverride: QualityProfile | null,
+    defaultQualityProfile: QualityProfile,
+  ): ChannelQualityChangePreview {
+    const current = this.getChannelSettings(channelId, defaultQualityProfile);
+    const targetEffectiveQualityProfile = qualityProfileOverride ?? defaultQualityProfile;
+    const isQualityIncrease =
+      QUALITY_PROFILE_RANK[targetEffectiveQualityProfile] >
+      QUALITY_PROFILE_RANK[current.effectiveQualityProfile];
+    const selectedDestinationIds = current.destinationIds;
+
+    let eligibleMediaCount = 0;
+    let eligibleCopyCount = 0;
+    if (isQualityIncrease && selectedDestinationIds.length > 0) {
+      const placeholders = selectedDestinationIds.map(() => '?').join(', ');
+      const lowerProfiles = (Object.keys(QUALITY_PROFILE_RANK) as QualityProfile[]).filter(
+        (profile) =>
+          QUALITY_PROFILE_RANK[profile] < QUALITY_PROFILE_RANK[targetEffectiveQualityProfile],
+      );
+      const profilePlaceholders = lowerProfiles.map(() => '?').join(', ');
+      const counts = this.database.sqlite
+        .prepare(
+          `select count(distinct mc.media_item_id) as media_count, count(*) as copy_count
+           from media_copies mc
+           join media_items mi on mi.id = mc.media_item_id
+           where mi.channel_id = ? and mc.status = 'VERIFIED'
+             and mc.destination_id in (${placeholders})
+             and mc.quality_profile in (${profilePlaceholders})`,
+        )
+        .get(channelId, ...selectedDestinationIds, ...lowerProfiles) as {
+        media_count: number;
+        copy_count: number;
+      };
+      eligibleMediaCount = counts.media_count;
+      eligibleCopyCount = counts.copy_count;
+    }
+
+    return ChannelQualityChangePreviewSchema.parse({
+      channelId,
+      previousEffectiveQualityProfile: current.effectiveQualityProfile,
+      targetEffectiveQualityProfile,
+      isQualityIncrease,
+      eligibleMediaCount,
+      eligibleCopyCount,
+      upgradeExistingSupported: false,
+      unsupportedReason:
+        'Existing verified copies cannot be replaced by the current durable backup planner. The new quality applies only when media needs a new copy.',
     });
   }
 

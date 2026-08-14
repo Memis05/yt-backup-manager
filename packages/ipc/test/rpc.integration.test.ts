@@ -174,6 +174,8 @@ const handlers: WorkerRpcHandlers = {
   'destinations.disable': unimplemented,
   'backup.channelSettings': unimplemented,
   'backup.updateChannelSettings': unimplemented,
+  'backup.previewQualityChange': unimplemented,
+  'backup.applyQualityChange': unimplemented,
   'backup.start': unimplemented,
   'backup.runs': unimplemented,
   'backup.controlRun': unimplemented,

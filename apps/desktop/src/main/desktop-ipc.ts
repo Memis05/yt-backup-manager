@@ -4,6 +4,8 @@ import type {
   AppSettings,
   CatalogQuery,
   ChannelBackupSettingsPatch,
+  ChannelQualityChangeApply,
+  ChannelQualityChangeRequest,
   GoogleOAuthCapability,
   JobControlAction,
   PlaylistMembersQuery,
@@ -156,6 +158,12 @@ export function registerDesktopIpcHandlers(
   );
   handle(DESKTOP_IPC_CHANNELS.updateChannelBackupSettings, async (input) =>
     worker.request('backup.updateChannelSettings', input as ChannelBackupSettingsPatch),
+  );
+  handle(DESKTOP_IPC_CHANNELS.previewChannelQualityChange, async (input) =>
+    worker.request('backup.previewQualityChange', input as ChannelQualityChangeRequest),
+  );
+  handle(DESKTOP_IPC_CHANNELS.applyChannelQualityChange, async (input) =>
+    worker.request('backup.applyQualityChange', input as ChannelQualityChangeApply),
   );
   handle(DESKTOP_IPC_CHANNELS.startBackup, async (input) =>
     worker.request('backup.start', input as { channelId: string }, {

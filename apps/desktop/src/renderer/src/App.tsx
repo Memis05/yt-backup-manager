@@ -62,6 +62,8 @@ import {
 } from './features/controllers';
 import { HomeScreen } from './features/home';
 import { LibraryScreen } from './features/library';
+import { ChannelsScreen } from './features/channels';
+import { AccountsSettingsScreen } from './features/settings/accounts';
 import { usePendingOperations } from './app/use-pending-operations';
 import { AppShell } from './shell/AppShell';
 
@@ -490,6 +492,15 @@ export function App() {
           </div>
         ) : route.area === 'library' ? (
           <LibraryScreen route={route} onNavigate={setRoute} notice={notice} onNotice={setNotice} />
+        ) : route.area === 'channels' ? (
+          <ChannelsScreen
+            route={route}
+            onNavigate={setRoute}
+            notice={notice}
+            onNotice={setNotice}
+          />
+        ) : route.area === 'settings' && route.category === 'accounts' ? (
+          <AccountsSettingsScreen onNavigate={setRoute} />
         ) : (
           <LegacyRouteOutlet
             route={route}

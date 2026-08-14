@@ -10,6 +10,10 @@ import {
   ChannelDtoSchema,
   ChannelBackupSettingsDtoSchema,
   ChannelBackupSettingsPatchSchema,
+  ChannelQualityChangeApplySchema,
+  ChannelQualityChangePreviewSchema,
+  ChannelQualityChangeRequestSchema,
+  ChannelQualityChangeResultSchema,
   ChannelsListResultSchema,
   DestinationsListResultSchema,
   DestinationDtoSchema,
@@ -48,6 +52,10 @@ import {
   type ChannelDto,
   type ChannelBackupSettingsDto,
   type ChannelBackupSettingsPatch,
+  type ChannelQualityChangeApply,
+  type ChannelQualityChangePreview,
+  type ChannelQualityChangeRequest,
+  type ChannelQualityChangeResult,
   type DestinationDto,
   type DashboardSummary,
   type FoundationStatus,
@@ -120,6 +128,10 @@ export interface YouTubeBackupManagerApi {
   disableDestination(destinationId: string): Promise<void>;
   getChannelBackupSettings(channelId: string): Promise<ChannelBackupSettingsDto>;
   updateChannelBackupSettings(input: ChannelBackupSettingsPatch): Promise<ChannelBackupSettingsDto>;
+  previewChannelQualityChange(
+    input: ChannelQualityChangeRequest,
+  ): Promise<ChannelQualityChangePreview>;
+  applyChannelQualityChange(input: ChannelQualityChangeApply): Promise<ChannelQualityChangeResult>;
   startBackup(channelId: string): Promise<BackupStartResult>;
   listBackupRuns(): Promise<BackupRunDto[]>;
   controlBackupRun(runId: string, action: RunControlAction): Promise<void>;
@@ -320,6 +332,26 @@ const api: YouTubeBackupManagerApi = Object.freeze({
       input,
     );
     return ChannelBackupSettingsDtoSchema.parse(response);
+  },
+  async previewChannelQualityChange(
+    inputValue: ChannelQualityChangeRequest,
+  ): Promise<ChannelQualityChangePreview> {
+    const input = ChannelQualityChangeRequestSchema.parse(inputValue);
+    const response = await ipcRenderer.invoke(
+      DESKTOP_IPC_CHANNELS.previewChannelQualityChange,
+      input,
+    );
+    return ChannelQualityChangePreviewSchema.parse(response);
+  },
+  async applyChannelQualityChange(
+    inputValue: ChannelQualityChangeApply,
+  ): Promise<ChannelQualityChangeResult> {
+    const input = ChannelQualityChangeApplySchema.parse(inputValue);
+    const response = await ipcRenderer.invoke(
+      DESKTOP_IPC_CHANNELS.applyChannelQualityChange,
+      input,
+    );
+    return ChannelQualityChangeResultSchema.parse(response);
   },
   async startBackup(channelId: string): Promise<BackupStartResult> {
     const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.startBackup, { channelId });

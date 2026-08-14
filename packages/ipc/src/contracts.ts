@@ -7,6 +7,10 @@ import {
   ChannelDtoSchema,
   ChannelBackupSettingsDtoSchema,
   ChannelBackupSettingsPatchSchema,
+  ChannelQualityChangeApplySchema,
+  ChannelQualityChangePreviewSchema,
+  ChannelQualityChangeRequestSchema,
+  ChannelQualityChangeResultSchema,
   ChannelsListResultSchema,
   DatabaseHealthSchema,
   DashboardSummarySchema,
@@ -209,6 +213,14 @@ export const WorkerRpcContracts = {
   'backup.updateChannelSettings': {
     params: ChannelBackupSettingsPatchSchema,
     result: ChannelBackupSettingsDtoSchema,
+  },
+  'backup.previewQualityChange': {
+    params: ChannelQualityChangeRequestSchema,
+    result: ChannelQualityChangePreviewSchema,
+  },
+  'backup.applyQualityChange': {
+    params: ChannelQualityChangeApplySchema,
+    result: ChannelQualityChangeResultSchema,
   },
   'backup.start': {
     params: z.object({ channelId: z.string().uuid() }).strict(),
@@ -446,6 +458,8 @@ export const DESKTOP_IPC_CHANNELS = {
   disableDestination: 'ytbm:destinations-disable',
   channelBackupSettings: 'ytbm:backup-channel-settings',
   updateChannelBackupSettings: 'ytbm:backup-update-channel-settings',
+  previewChannelQualityChange: 'ytbm:backup-preview-quality-change',
+  applyChannelQualityChange: 'ytbm:backup-apply-quality-change',
   startBackup: 'ytbm:backup-start',
   backupRuns: 'ytbm:backup-runs',
   controlBackupRun: 'ytbm:backup-control-run',
@@ -593,6 +607,14 @@ const DesktopIpcContracts = {
   [DESKTOP_IPC_CHANNELS.updateChannelBackupSettings]: {
     input: ChannelBackupSettingsPatchSchema,
     output: ChannelBackupSettingsDtoSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.previewChannelQualityChange]: {
+    input: ChannelQualityChangeRequestSchema,
+    output: ChannelQualityChangePreviewSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.applyChannelQualityChange]: {
+    input: ChannelQualityChangeApplySchema,
+    output: ChannelQualityChangeResultSchema,
   },
   [DESKTOP_IPC_CHANNELS.startBackup]: {
     input: z.object({ channelId: z.string().uuid() }).strict(),

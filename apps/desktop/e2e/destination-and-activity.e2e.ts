@@ -157,10 +157,12 @@ test('packaged desktop preserves setup, destination, library, and activity journ
     await navigation.getByRole('button', { name: 'Home', exact: true }).click();
     await page.getByRole('button', { name: 'Set up a new backup', exact: true }).click();
     await expect(
-      page.getByRole('heading', { level: 1, name: 'Settings', exact: true }),
+      page.getByRole('heading', { level: 1, name: 'Accounts', exact: true }),
     ).toBeVisible();
-    await expect(page.getByText('Accounts', { exact: true })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Connect Google', exact: true })).toBeVisible();
+    await expect(
+      page.getByRole('button', { name: 'Connect Google account', exact: true }),
+    ).toBeVisible();
+    await expect(navigation.getByRole('button', { name: 'Accounts', exact: true })).toHaveCount(0);
     await expect(page.getByText('Worker ready', { exact: true })).toHaveCount(0);
 
     await navigation.getByRole('button', { name: 'Library', exact: true }).click();
