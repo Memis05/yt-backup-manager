@@ -58,7 +58,21 @@ async function closeElectronApplication(
   electronApp: ElectronApplication,
   timeoutMs = 3_000,
 ): Promise<void> {
-  const applicationProcess = electronApp.process();
+  let applicationProcess: ReturnType<ElectronApplication['process']>;
+  try {
+    applicationProcess = electronApp.process();
+  } catch {
+    return;
+  }
+  if (process.platform === 'win32') {
+    if (applicationProcess.exitCode === null) {
+      spawnSync('taskkill.exe', ['/PID', String(applicationProcess.pid), '/T', '/F'], {
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+    }
+    return;
+  }
   let closeSettled = false;
   const closePromise = electronApp
     .close()
@@ -73,13 +87,6 @@ async function closeElectronApplication(
   ]);
   if (closeSettled || applicationProcess.exitCode !== null) return;
 
-  if (process.platform === 'win32') {
-    spawnSync('taskkill.exe', ['/PID', String(applicationProcess.pid), '/T', '/F'], {
-      stdio: 'ignore',
-      windowsHide: true,
-    });
-    return;
-  }
   applicationProcess.kill('SIGKILL');
 }
 
@@ -172,7 +179,9 @@ export async function launchPackagedDesktop(
     close: async () => {
       if (closed) return;
       closed = true;
-      await stopWorker(userData, localData).catch(() => undefined);
+      if (process.platform !== 'win32') {
+        await stopWorker(userData, localData).catch(() => undefined);
+      }
       await closeElectronApplication(electronApp);
       await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     },

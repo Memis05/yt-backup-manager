@@ -164,11 +164,11 @@ test('packaged desktop preserves setup, destination, library, and activity journ
     await expect(page.getByText('Worker ready', { exact: true })).toHaveCount(0);
 
     await navigation.getByRole('button', { name: 'Library', exact: true }).click();
-    await expect(page.getByRole('searchbox', { name: 'Search library' })).toBeVisible();
+    await expect(page.getByRole('searchbox', { name: 'Search media' })).toBeVisible();
     await page.getByRole('tab', { name: 'Playlists', exact: true }).click();
     await expect(page.getByRole('searchbox', { name: 'Search playlists' })).toBeVisible();
     await page.getByRole('tab', { name: 'Media', exact: true }).click();
-    await expect(page.getByRole('searchbox', { name: 'Search library' })).toBeVisible();
+    await expect(page.getByRole('searchbox', { name: 'Search media' })).toBeVisible();
 
     await navigation.getByRole('button', { name: 'Storage', exact: true }).click();
     await expect(

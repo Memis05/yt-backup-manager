@@ -2489,6 +2489,13 @@ export class LocalBackupRepository {
 
   public mediaBackupDetails(mediaItemId: string): MediaBackupDetails {
     const media = this.getMediaContext(mediaItemId);
+    const playlists = this.database.sqlite
+      .prepare(
+        `select p.id, p.title, p.source_status from playlist_items pi
+         join playlists p on p.id = pi.playlist_id
+         where pi.media_item_id = ? order by p.title collate nocase, p.id`,
+      )
+      .all(mediaItemId) as Array<{ id: string; title: string; source_status: string }>;
     const rows = this.database.sqlite
       .prepare(
         `select mc.*, d.destination_type, d.root_path, d.availability_status,
@@ -2501,9 +2508,20 @@ export class LocalBackupRepository {
     return MediaBackupDetailsSchema.parse({
       mediaItemId,
       providerMediaId: media.providerMediaId,
+      channelId: media.channelId,
+      channelTitle: media.channelTitle,
       title: media.title,
       mediaType: media.mediaType,
       sourceStatus: media.sourceStatus,
+      sourceUrl: media.sourceUrl,
+      thumbnailUrl: media.thumbnailUrl,
+      publishedAt: media.publishedAt,
+      durationSeconds: media.durationSeconds,
+      playlists: playlists.map((playlist) => ({
+        id: playlist.id,
+        title: playlist.title,
+        sourceStatus: playlist.source_status,
+      })),
       copies: rows.map((row) => ({
         id: row.id,
         destinationId: row.destination_id,

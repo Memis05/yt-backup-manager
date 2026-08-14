@@ -238,13 +238,28 @@ export const MediaCopyDtoSchema = z
   })
   .strict();
 
+export const MediaDetailsPlaylistDtoSchema = z
+  .object({
+    id: z.string().uuid(),
+    title: z.string().min(1),
+    sourceStatus: SourceStatusSchema,
+  })
+  .strict();
+
 export const MediaBackupDetailsSchema = z
   .object({
     mediaItemId: z.string().uuid(),
     providerMediaId: z.string(),
+    channelId: z.string().uuid(),
+    channelTitle: z.string().min(1),
     title: z.string(),
     mediaType: MediaTypeSchema,
     sourceStatus: SourceStatusSchema,
+    sourceUrl: z.string().url(),
+    thumbnailUrl: z.string().url().nullable(),
+    publishedAt: NullableEpochMillisecondsSchema,
+    durationSeconds: z.number().int().nonnegative().nullable(),
+    playlists: z.array(MediaDetailsPlaylistDtoSchema),
     copies: z.array(MediaCopyDtoSchema),
   })
   .strict();
@@ -334,6 +349,7 @@ export type QueueSnapshot = z.infer<typeof QueueSnapshotSchema>;
 export type JobControlAction = z.infer<typeof JobControlActionSchema>;
 export type RunControlAction = z.infer<typeof RunControlActionSchema>;
 export type MediaCopyDto = z.infer<typeof MediaCopyDtoSchema>;
+export type MediaDetailsPlaylistDto = z.infer<typeof MediaDetailsPlaylistDtoSchema>;
 export type MediaBackupDetails = z.infer<typeof MediaBackupDetailsSchema>;
 export type OpenVerifiedCopyFolderResult = z.infer<typeof OpenVerifiedCopyFolderResultSchema>;
 export type ResolveVerifiedCopyFolderResult = z.infer<typeof ResolveVerifiedCopyFolderResultSchema>;

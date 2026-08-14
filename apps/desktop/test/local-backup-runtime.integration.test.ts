@@ -294,6 +294,15 @@ describe('LocalBackupRuntime durable pipeline', () => {
       ]),
     );
     const details = runtime.mediaDetails(fixture.mediaId);
+    expect(details).toMatchObject({
+      mediaItemId: fixture.mediaId,
+      providerMediaId: 'media123',
+      channelId: fixture.channelId,
+      channelTitle: 'Fixture Channel',
+      sourceUrl: 'https://www.youtube.com/watch?v=media123',
+      thumbnailUrl: 'https://i.ytimg.com/vi/media123/default.jpg',
+      playlists: [],
+    });
     expect(details.copies).toHaveLength(1);
     expect(details.copies[0]).toMatchObject({
       status: 'VERIFIED',

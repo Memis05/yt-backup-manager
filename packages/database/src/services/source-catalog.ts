@@ -52,6 +52,12 @@ interface MediaRow {
   first_seen_at: number;
   last_seen_at: number | null;
   playlist_titles_json: string;
+  copy_count: number;
+  verified_count: number;
+  pending_count: number;
+  attention_count: number;
+  unavailable_count: number;
+  auth_required_count: number;
 }
 
 interface ExistingMediaRow {
@@ -100,8 +106,42 @@ function mediaRowToDto(row: MediaRow): MediaLibraryItemDto {
     firstSeenAt: row.first_seen_at,
     lastSeenAt: row.last_seen_at,
     playlistTitles: parseJsonArray(row.playlist_titles_json),
+    copySummary: {
+      copyCount: row.copy_count,
+      verifiedCount: row.verified_count,
+      pendingCount: row.pending_count,
+      attentionCount: row.attention_count,
+      unavailableCount: row.unavailable_count,
+      authRequiredCount: row.auth_required_count,
+    },
   };
 }
+
+const MEDIA_COPY_SUMMARY_COLUMNS = `
+  coalesce(cs.copy_count, 0) as copy_count,
+  coalesce(cs.verified_count, 0) as verified_count,
+  coalesce(cs.pending_count, 0) as pending_count,
+  coalesce(cs.attention_count, 0) as attention_count,
+  coalesce(cs.unavailable_count, 0) as unavailable_count,
+  coalesce(cs.auth_required_count, 0) as auth_required_count`;
+
+const MEDIA_COPY_SUMMARY_JOIN = `
+  left join (
+    select mc.media_item_id,
+      count(*) as copy_count,
+      sum(case when mc.status = 'VERIFIED' then 1 else 0 end) as verified_count,
+      sum(case when mc.status in ('PENDING', 'TRANSFERRING', 'VERIFYING') then 1 else 0 end)
+        as pending_count,
+      sum(case when mc.status in ('MISSING', 'CORRUPT', 'FAILED') then 1 else 0 end)
+        as attention_count,
+      sum(case when mc.status = 'UNAVAILABLE' or d.availability_status in
+        ('DISCONNECTED', 'READ_ONLY', 'FULL', 'ERROR', 'UNKNOWN') then 1 else 0 end)
+        as unavailable_count,
+      sum(case when d.availability_status = 'AUTH_REQUIRED' then 1 else 0 end)
+        as auth_required_count
+    from media_copies mc join destinations d on d.id = mc.destination_id
+    group by mc.media_item_id
+  ) cs on cs.media_item_id = m.id`;
 
 function syncStatus(value: string | null): ChannelDto['syncStatus'] {
   if (value === null) return null;
@@ -345,8 +385,10 @@ export class SourceCatalogService {
             select p.title as title from playlist_items pi
             join playlists p on p.id = pi.playlist_id
             where pi.media_item_id = m.id order by p.title collate nocase
-          )), '[]') as playlist_titles_json
+          )), '[]') as playlist_titles_json,
+          ${MEDIA_COPY_SUMMARY_COLUMNS}
          from media_items m join channels c on c.id = m.channel_id
+         ${MEDIA_COPY_SUMMARY_JOIN}
          ${where}
          order by coalesce(m.published_at, 0) desc, m.id desc limit ? offset ?`,
       )
@@ -431,10 +473,12 @@ export class SourceCatalogService {
             select p2.title as title from playlist_items pi2
             join playlists p2 on p2.id = pi2.playlist_id
             where pi2.media_item_id = m.id order by p2.title collate nocase
-          )), '[]') as playlist_titles_json
+          )), '[]') as playlist_titles_json,
+          ${MEDIA_COPY_SUMMARY_COLUMNS}
          from playlist_items pi
          join media_items m on m.id = pi.media_item_id
          join channels c on c.id = m.channel_id
+         ${MEDIA_COPY_SUMMARY_JOIN}
          where pi.playlist_id = ?
          order by coalesce(pi.position, 2147483647), m.id limit ? offset ?`,
       )

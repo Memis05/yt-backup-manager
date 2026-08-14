@@ -24,6 +24,9 @@ const CONTROLLER_OWNER = {
   recovery: 'recovery',
   library: 'library',
   playlists: 'playlists',
+  libraryChannels: 'library-channels',
+  playlistMembers: 'playlist-members',
+  mediaDetails: 'media-details',
   backup: 'backup',
   settings: 'settings',
 } as const;
@@ -145,5 +148,35 @@ export function usePlaylistsController<Result>(
     ...options,
     ownerKey: CONTROLLER_OWNER.playlists,
     delayMs: CONTROLLER_CADENCE_MS.playlists,
+  });
+}
+
+/** Loads the channel facets used by both Library views. */
+export function useLibraryChannelsController<Result>(
+  options: LoadFeatureControllerOptions<Result>,
+): FeatureController {
+  return useLoadController({
+    ...options,
+    ownerKey: CONTROLLER_OWNER.libraryChannels,
+  });
+}
+
+/** Loads one paged playlist membership query for the selected playlist. */
+export function usePlaylistMembersController<Result>(
+  options: LoadFeatureControllerOptions<Result>,
+): FeatureController {
+  return useLoadController({
+    ...options,
+    ownerKey: CONTROLLER_OWNER.playlistMembers,
+  });
+}
+
+/** Loads the route-owned Media Details snapshot and integrity eligibility. */
+export function useMediaDetailsController<Result>(
+  options: LoadFeatureControllerOptions<Result>,
+): FeatureController {
+  return useLoadController({
+    ...options,
+    ownerKey: CONTROLLER_OWNER.mediaDetails,
   });
 }

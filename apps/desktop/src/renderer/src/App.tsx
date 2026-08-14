@@ -61,6 +61,7 @@ import {
   useSourceSyncController,
 } from './features/controllers';
 import { HomeScreen } from './features/home';
+import { LibraryScreen } from './features/library';
 import { usePendingOperations } from './app/use-pending-operations';
 import { AppShell } from './shell/AppShell';
 
@@ -487,6 +488,8 @@ export function App() {
             ) : null}
             <HomeScreen onNavigate={setRoute} onOpenRecovery={openRecoveryFromHome} />
           </div>
+        ) : route.area === 'library' ? (
+          <LibraryScreen route={route} onNavigate={setRoute} notice={notice} onNotice={setNotice} />
         ) : (
           <LegacyRouteOutlet
             route={route}
