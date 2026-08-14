@@ -141,7 +141,7 @@ async function runWorker(): Promise<void> {
     ytDlpExecutable,
     ffmpegExecutable,
     schedulerAdapter:
-      app.isPackaged && process.platform === 'win32'
+      app.isPackaged && process.platform === 'win32' && config.environment !== 'test'
         ? new WindowsTaskScheduler()
         : new UnavailableWindowsTaskScheduler(),
     scheduledExecutablePath: packagedExecutablePath(),
@@ -360,6 +360,7 @@ async function runDesktop(): Promise<void> {
     tray.destroy();
     unregisterIpc();
     workerManager.disconnect();
+    workerManager.terminateSpawnedWorkerForTest();
   });
   app.on('window-all-closed', () => {
     if (!settings.keepRunningInTray) {

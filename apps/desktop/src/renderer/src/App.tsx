@@ -64,6 +64,7 @@ import { HomeScreen } from './features/home';
 import { LibraryScreen } from './features/library';
 import { ChannelsScreen } from './features/channels';
 import { AccountsSettingsScreen } from './features/settings/accounts';
+import { ActivityScreen } from './features/activity';
 import { usePendingOperations } from './app/use-pending-operations';
 import { AppShell } from './shell/AppShell';
 
@@ -398,32 +399,27 @@ function useInternalRouteNavigation(
     ): Promise<InternalRouteResolutionContext> => {
       switch (internalRoute.section) {
         case 'backup':
-          return { backupRunIds: (await window.ytbm.listBackupRuns()).map((run) => run.id) };
+          if (internalRoute.entityId === null) return {};
+          return {
+            backupRunIds: (await window.ytbm.resolveActivityEntity(internalRoute.entityId)).found
+              ? [internalRoute.entityId]
+              : [],
+          };
         case 'queue': {
-          const activityEntities: NonNullable<
-            InternalRouteResolutionContext['activityEntities']
-          >[number][] = [];
-          let page = 1;
-          for (;;) {
-            const snapshot = await window.ytbm.getQueueSnapshot({
-              section: 'ALL',
-              page,
-              pageSize: 100,
-            });
-            activityEntities.push(
-              ...snapshot.jobs.map((job) => ({
-                entityId: job.id,
-                view:
-                  job.status === 'BLOCKED' || job.status === 'FAILED'
-                    ? ('attention' as const)
-                    : ('active' as const),
-              })),
-            );
-            const pageCount = Math.max(1, Math.ceil(snapshot.totalItems / snapshot.pageSize));
-            if (page >= pageCount) break;
-            page += 1;
-          }
-          return { activityEntities };
+          if (internalRoute.entityId === null) return {};
+          const resolution = await window.ytbm.resolveActivityEntity(internalRoute.entityId);
+          return {
+            activityEntities:
+              resolution.found && resolution.view !== null && resolution.entityId !== null
+                ? [
+                    {
+                      entityId: internalRoute.entityId,
+                      routeEntityId: resolution.entityId,
+                      view: resolution.view,
+                    },
+                  ]
+                : [],
+          };
         }
         case 'storage':
           return {
@@ -494,6 +490,13 @@ export function App() {
           <LibraryScreen route={route} onNavigate={setRoute} notice={notice} onNotice={setNotice} />
         ) : route.area === 'channels' ? (
           <ChannelsScreen
+            route={route}
+            onNavigate={setRoute}
+            notice={notice}
+            onNotice={setNotice}
+          />
+        ) : route.area === 'activity' ? (
+          <ActivityScreen
             route={route}
             onNavigate={setRoute}
             notice={notice}

@@ -1,14 +1,21 @@
 import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { DrizzleGoogleAccountRepository } from '@ytbm/database/worker';
 import { channelRelativeDirectory, mediaRelativeDirectory } from '@ytbm/storage-filesystem';
 
 import { launchPackagedDesktop, type PackagedDesktopSeedContext } from './packaged-desktop';
 
 const POPULATED_CHANNEL_TITLE = 'Desktop Archive Channel';
+
+async function captureActivityQa(page: Page, name: string): Promise<void> {
+  if (process.env.YTBM_CAPTURE_ACTIVITY_QA !== '1') return;
+  const directory = resolve(process.cwd(), 'output/playwright/activity-qa');
+  await mkdir(directory, { recursive: true });
+  await page.screenshot({ path: join(directory, `${name}.png`) });
+}
 
 async function seedPopulatedHome({
   database,
@@ -132,6 +139,86 @@ async function seedPopulatedHome({
   })();
 }
 
+async function seedActivityAttention(context: PackagedDesktopSeedContext): Promise<void> {
+  await seedPopulatedHome(context);
+  const { database } = context;
+  const channelId = '00000000-0000-4000-8000-000000000101';
+  const mediaId = '00000000-0000-4000-8000-000000000103';
+  const driveId = '00000000-0000-4000-8000-000000000106';
+  const runId = '00000000-0000-4000-8000-000000000107';
+  const jobId = '00000000-0000-4000-8000-000000000108';
+  const retryJobId = '00000000-0000-4000-8000-000000000109';
+  const account = database.sqlite.prepare('select id from accounts limit 1').get() as {
+    id: string;
+  };
+  const now = Date.now();
+  database.sqlite.transaction(() => {
+    database.sqlite
+      .prepare(
+        `insert into destinations (
+          id, destination_type, account_id, enabled, availability_status,
+          last_error_code, last_error_at, created_at, updated_at
+        ) values (?, 'GOOGLE_DRIVE', ?, 1, 'AUTH_REQUIRED', 'AUTH_REVOKED', ?, ?, ?)`,
+      )
+      .run(driveId, account.id, now, now, now);
+    database.sqlite
+      .prepare(
+        `insert into backup_runs (
+          id, channel_id, trigger_type, status, effective_config_json,
+          failed_count, started_at, created_at, updated_at
+        ) values (?, ?, 'MANUAL', 'RUNNING', ?, 1, ?, ?, ?)`,
+      )
+      .run(
+        runId,
+        channelId,
+        JSON.stringify({ qualityProfile: 'MAX_1080P', destinationIds: [driveId] }),
+        now - 2_000,
+        now - 3_000,
+        now - 1_000,
+      );
+    database.sqlite
+      .prepare(
+        `insert into jobs (
+          id, backup_run_id, channel_id, media_item_id, destination_id, job_type,
+          status, priority, attempt_count, max_attempts, bytes_processed, payload_json,
+          idempotency_key, error_code, error_message_safe, created_at, completed_at, updated_at
+        ) values (?, ?, ?, ?, ?, 'UPLOAD_TO_GOOGLE_DRIVE', 'FAILED', 0, 1, 5, 0,
+          '{}', ?, 'AUTH_REVOKED', 'Reconnect Google Drive to continue this backup.', ?, ?, ?)`,
+      )
+      .run(
+        jobId,
+        runId,
+        channelId,
+        mediaId,
+        driveId,
+        `e2e:${jobId}`,
+        now - 2_000,
+        now - 1_000,
+        now - 1_000,
+      );
+    database.sqlite
+      .prepare(
+        `insert into jobs (
+          id, backup_run_id, channel_id, media_item_id, destination_id, job_type,
+          status, priority, attempt_count, max_attempts, bytes_processed, payload_json,
+          idempotency_key, error_code, error_message_safe, next_retry_at, created_at, updated_at
+        ) values (?, ?, ?, ?, ?, 'VERIFY_FILESYSTEM_COPY', 'RETRY_WAIT', 0, 1, 5, 0,
+          '{}', ?, 'VERIFY_FAILED', 'Verification will retry automatically.', ?, ?, ?)`,
+      )
+      .run(
+        retryJobId,
+        runId,
+        channelId,
+        mediaId,
+        '00000000-0000-4000-8000-000000000102',
+        `e2e:${retryJobId}`,
+        now + 60 * 60_000,
+        now - 1_500,
+        now - 1_000,
+      );
+  })();
+}
+
 test('packaged desktop preserves setup, destination, library, and activity journeys', async () => {
   const desktop = await launchPackagedDesktop();
   const backupRoot = join(desktop.directory, 'backup-destination');
@@ -199,18 +286,20 @@ test('packaged desktop preserves setup, destination, library, and activity journ
       page.getByRole('heading', { level: 1, name: 'Activity', exact: true }),
     ).toBeVisible();
     await page.getByRole('tab', { name: 'History', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Backup history', exact: true })).toBeVisible();
-    await expect(page.getByText('No backup history', { exact: true })).toBeVisible();
-    await expect(page.getByText('No backed-up media', { exact: true })).toBeVisible();
+    await expect(
+      page.getByRole('heading', { name: 'Backup and archive history', exact: true }),
+    ).toBeVisible();
+    await expect(page.getByText('No backup runs match this view.', { exact: true })).toBeVisible();
+    await expect(
+      page.getByText('No archive events match this view.', { exact: true }),
+    ).toBeVisible();
 
     await page.getByRole('tab', { name: 'Active', exact: true }).click();
-    await expect(page.getByRole('heading', { name: 'Backup activity', exact: true })).toBeVisible();
-    await expect(page.getByRole('button', { name: '0 Active now', exact: true })).toBeVisible();
     await expect(
-      page.getByRole('button', { name: '0 Waiting to download', exact: true }),
+      page.getByRole('heading', { name: 'Active operations', exact: true }),
     ).toBeVisible();
-    await expect(page.getByRole('button', { name: '0 Backed up', exact: true })).toBeVisible();
-    await expect(page.getByText('Queue is empty', { exact: true })).toBeVisible();
+    await expect(page.getByText('No active operations', { exact: true })).toBeVisible();
+    await captureActivityQa(page, 'active-empty-1120x760');
   } finally {
     await desktop.close();
   }
@@ -253,9 +342,19 @@ test('packaged Home starts a worker-backed backup and refreshes from the accepte
       .toEqual(['COMPLETED']);
 
     await page.getByRole('tab', { name: 'History', exact: true }).click();
-    await expect(page.locator('.run-row')).toHaveCount(1);
-    await expect(page.locator('.run-row').first()).toContainText(POPULATED_CHANNEL_TITLE);
-    await expect(page.locator('.run-row').first()).toContainText('COMPLETED');
+    await expect(page.locator('.activity-history-row')).toHaveCount(1);
+    await expect(page.locator('.activity-history-row').first()).toContainText(
+      POPULATED_CHANNEL_TITLE,
+    );
+    await expect(page.locator('.activity-history-row').first()).toContainText('Completed');
+    await captureActivityQa(page, 'history-1120x760');
+    await page.locator('.activity-history-row').first().click();
+    await expect(page.getByRole('dialog', { name: POPULATED_CHANNEL_TITLE })).toBeVisible();
+    await captureActivityQa(page, 'run-details-overview-1120x760');
+    await page.getByText('Technical details', { exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Run summary', exact: true })).toBeVisible();
+    await captureActivityQa(page, 'run-details-technical-1120x760');
+    await page.getByRole('button', { name: 'Close dialog' }).click();
 
     await navigation.getByRole('button', { name: 'Home', exact: true }).click();
     await expect(page.getByRole('heading', { level: 1, name: 'Home', exact: true })).toBeVisible();
@@ -271,6 +370,78 @@ test('packaged Home starts a worker-backed backup and refreshes from the accepte
     await expect(
       page.locator('[aria-labelledby="home-recent-title"] .home-action-row').first(),
     ).toContainText('Backup completed');
+  } finally {
+    await desktop.close();
+  }
+});
+
+test('packaged Activity groups attention and opens fresh worker-backed operation details', async () => {
+  const desktop = await launchPackagedDesktop({ prepareDatabase: seedActivityAttention });
+  try {
+    const { electronApp, page } = desktop;
+    const navigation = page.getByRole('navigation', { name: 'Primary navigation' });
+    await navigation.getByRole('button', { name: 'Activity', exact: true }).click();
+    await page.getByRole('tab', { name: /Needs attention/ }).click();
+
+    await expect(page.getByRole('heading', { name: 'Needs attention', exact: true })).toBeVisible();
+    await expect(page.getByText('Account authorization', { exact: true })).toBeVisible();
+    await expect(
+      page.getByText(
+        'This Google account must be reconnected before its archive work can continue.',
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await expect(page.locator('.activity-attention-group')).toHaveCount(1);
+    await captureActivityQa(page, 'attention-1120x760');
+
+    await page.getByRole('button', { name: 'Manage accounts', exact: true }).click();
+    await expect(page.getByRole('heading', { level: 1, name: 'Accounts' })).toBeVisible();
+    await navigation.getByRole('button', { name: 'Activity', exact: true }).click();
+    await expect(page.getByRole('tab', { name: 'Active', exact: true })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    await page.locator('.activity-operation__body').click();
+    const details = page.getByRole('dialog', { name: 'Desktop Archive Video' });
+    await expect(details).toBeVisible();
+    await captureActivityQa(page, 'operation-details-overview-1120x760');
+    await details.getByText('Technical details', { exact: true }).click();
+    const failedUpload = details.getByRole('article').filter({ hasText: 'Upload to Google Drive' });
+    await expect(failedUpload).toContainText('Failed');
+    await captureActivityQa(page, 'operation-details-technical-1120x760');
+
+    await page.getByRole('button', { name: 'Close dialog' }).click();
+    await page.getByRole('tab', { name: 'Active', exact: true }).click();
+    await electronApp.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.setContentSize(880, 620);
+    });
+    await expect
+      .poll(() => page.evaluate(() => [window.innerWidth, window.innerHeight]))
+      .toEqual([880, 620]);
+    await expect(
+      page.getByRole('heading', { name: 'Active operations', exact: true }),
+    ).toBeVisible();
+    await expect(page.locator('.activity-operation')).toContainText('Retry scheduled');
+    await expect(page.locator('.activity-operation')).toContainText('Failed');
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const root = document.scrollingElement;
+          return root === null || root.scrollWidth <= root.clientWidth;
+        }),
+      )
+      .toBe(true);
+    await captureActivityQa(page, 'active-retrying-880x620');
+
+    await electronApp.evaluate(({ BrowserWindow }) => {
+      BrowserWindow.getAllWindows()[0]?.setContentSize(1440, 900);
+    });
+    await expect
+      .poll(() => page.evaluate(() => [window.innerWidth, window.innerHeight]))
+      .toEqual([1440, 900]);
+    await page.getByRole('tab', { name: 'History', exact: true }).click();
+    await expect(page.locator('.activity-history-row')).toHaveCount(1);
+    await captureActivityQa(page, 'history-1440x900');
   } finally {
     await desktop.close();
   }

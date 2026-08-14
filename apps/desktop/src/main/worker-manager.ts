@@ -149,6 +149,12 @@ export class DesktopWorkerManager {
     return this.spawnedProcess?.pid ?? null;
   }
 
+  public terminateSpawnedWorkerForTest(): void {
+    if (this.config.environment !== 'test') return;
+    if (this.spawnedProcess?.exitCode === null) this.spawnedProcess.kill();
+    this.spawnedProcess = null;
+  }
+
   private configureGoogleOAuth(client: WorkerRpcClient): Promise<{ configured: boolean }> {
     return client.request('accounts.oauthConfigure', {
       clientId: this.config.googleOAuthClientId,
@@ -168,14 +174,13 @@ export class DesktopWorkerManager {
   }
 
   private spawnWorker(): void {
+    const gpuArgs =
+      this.config.environment === 'test'
+        ? ['--disable-gpu', '--disable-software-rasterizer', '--in-process-gpu']
+        : ['--disable-gpu'];
     const args = this.app.isPackaged
-      ? ['--disable-gpu', '--worker', '--spawned-by-desktop']
-      : [
-          process.argv[1] ?? this.app.getAppPath(),
-          '--disable-gpu',
-          '--worker',
-          '--spawned-by-desktop',
-        ];
+      ? [...gpuArgs, '--worker', '--spawned-by-desktop']
+      : [process.argv[1] ?? this.app.getAppPath(), ...gpuArgs, '--worker', '--spawned-by-desktop'];
     this.spawnedProcess = spawn(process.execPath, args, {
       detached: true,
       windowsHide: true,

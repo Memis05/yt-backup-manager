@@ -481,6 +481,13 @@ export class LocalBackupRepository {
       );
     if (previous.availabilityStatus !== availabilityStatus) {
       if (availabilityStatus === 'AUTH_REQUIRED') {
+        this.insertActivity({
+          eventType: 'AUTH_REQUIRED',
+          destinationId: id,
+          summary: 'Google Drive authorization is required before backup work can continue.',
+          severity: 'WARNING',
+          createdAt: changedAt,
+        });
         this.enqueueNotification({
           category: 'DRIVE_AUTH_REQUIRED',
           dedupKey: `destination:${id}:auth-required`,
@@ -494,6 +501,12 @@ export class LocalBackupRepository {
           .prepare('delete from notification_events where dedup_key = ?')
           .run(`destination:${id}:auth-required`);
         if (previous.availabilityStatus !== 'UNKNOWN') {
+          this.insertActivity({
+            eventType: 'DESTINATION_RECONNECTED',
+            destinationId: id,
+            summary: 'Google Drive reconnected and blocked backup work can resume.',
+            createdAt: changedAt,
+          });
           this.enqueueNotification({
             category: 'DESTINATION_RECONNECTED',
             dedupKey: `destination:${id}:reconnected:${changedAt}`,
@@ -503,6 +516,14 @@ export class LocalBackupRepository {
             entityId: id,
           });
         }
+      } else if (previous.availabilityStatus !== 'UNKNOWN') {
+        this.insertActivity({
+          eventType: 'DESTINATION_DISCONNECTED',
+          destinationId: id,
+          summary: 'Google Drive is unavailable and its backup work is waiting.',
+          severity: 'WARNING',
+          createdAt: changedAt,
+        });
       }
     }
     return this.getGoogleDriveDestination(id);
@@ -548,6 +569,13 @@ export class LocalBackupRepository {
       );
     if (previous.availabilityStatus !== input.availabilityStatus) {
       if (input.availabilityStatus === 'DISCONNECTED') {
+        this.insertActivity({
+          eventType: 'DESTINATION_DISCONNECTED',
+          destinationId: id,
+          summary: 'A local backup destination disconnected and its work is waiting.',
+          severity: 'WARNING',
+          createdAt: changedAt,
+        });
         this.enqueueNotification({
           category: 'DESTINATION_DISCONNECTED',
           dedupKey: `destination:${id}:disconnected`,
@@ -561,6 +589,12 @@ export class LocalBackupRepository {
           .prepare('delete from notification_events where dedup_key = ?')
           .run(`destination:${id}:disconnected`);
         if (previous.availabilityStatus !== 'UNKNOWN') {
+          this.insertActivity({
+            eventType: 'DESTINATION_RECONNECTED',
+            destinationId: id,
+            summary: 'A local backup destination reconnected and blocked work can resume.',
+            createdAt: changedAt,
+          });
           this.enqueueNotification({
             category: 'DESTINATION_RECONNECTED',
             dedupKey: `destination:${id}:reconnected:${changedAt}`,

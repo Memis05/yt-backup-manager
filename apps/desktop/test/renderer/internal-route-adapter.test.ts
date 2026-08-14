@@ -80,6 +80,15 @@ describe('stable internal notification route adapter', () => {
     });
   });
 
+  it('maps a legacy job notification to its fresh worker-owned Activity operation', () => {
+    const operationId = `operation:${entityId}:${staleId}`;
+    expect(
+      internalRouteToAppRoute(internalRoute('queue', entityId), {
+        activityEntities: [{ entityId, routeEntityId: operationId, view: 'attention' }],
+      }),
+    ).toEqual({ area: 'activity', view: 'attention', entityId: operationId });
+  });
+
   it.each<InternalRoute['section']>(['backup', 'queue', 'storage', 'integrity'])(
     'falls back without copying a %s entity when resolution data is unavailable',
     (section) => {

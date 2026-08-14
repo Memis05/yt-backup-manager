@@ -1,21 +1,13 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-import {
-  _electron as electron,
-  expect,
-  type ElectronApplication,
-  type Page,
-} from '@playwright/test';
+import { _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
 import {
   acquireWorkerDatabaseOwnership,
   openWorkerDatabase,
   type WorkerDatabase,
 } from '@ytbm/database/worker';
-import { WorkerRpcClient, createUserScopedEndpoints } from '@ytbm/ipc';
-import { RpcAuthTokenStore } from '@ytbm/security';
 
 export interface PackagedDesktop {
   electronApp: ElectronApplication;
@@ -37,19 +29,6 @@ export interface PackagedDesktopOptions {
   prepareDatabase?(context: PackagedDesktopSeedContext): Promise<void> | void;
 }
 
-async function stopWorker(userData: string, localData: string): Promise<void> {
-  const endpoints = createUserScopedEndpoints(join(localData, 'runtime'));
-  const token = await new RpcAuthTokenStore(join(userData, 'worker-rpc.token')).loadOrCreate();
-  const client = new WorkerRpcClient(endpoints.rpc, token);
-  try {
-    await client.waitUntilConnected(2_000);
-    await expect(client.request('worker.shutdownIfIdle', {})).resolves.toEqual({ accepted: true });
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  } finally {
-    client.close();
-  }
-}
-
 async function diagnosticLog(path: string): Promise<string> {
   return readFile(path, 'utf8').catch(() => '(none)');
 }
@@ -66,10 +45,16 @@ async function closeElectronApplication(
   }
   if (process.platform === 'win32') {
     if (applicationProcess.exitCode === null) {
-      spawnSync('taskkill.exe', ['/PID', String(applicationProcess.pid), '/T', '/F'], {
-        stdio: 'ignore',
-        windowsHide: true,
+      const exited = new Promise<void>((resolve) => {
+        applicationProcess.once('exit', () => resolve());
       });
+      await electronApp
+        .evaluate(({ app }) => {
+          app.quit();
+        })
+        .catch(() => undefined);
+      await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, timeoutMs))]);
+      if (applicationProcess.exitCode === null) applicationProcess.kill();
     }
     return;
   }
@@ -123,7 +108,7 @@ export async function launchPackagedDesktop(
   try {
     electronApp = await electron.launch({
       executablePath,
-      args: ['--disable-gpu', '--disable-software-rasterizer'],
+      args: ['--disable-gpu', '--in-process-gpu', '--no-sandbox'],
       timeout: 15_000,
       env: {
         ...environment,
@@ -179,9 +164,6 @@ export async function launchPackagedDesktop(
     close: async () => {
       if (closed) return;
       closed = true;
-      if (process.platform !== 'win32') {
-        await stopWorker(userData, localData).catch(() => undefined);
-      }
       await closeElectronApplication(electronApp);
       await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     },

@@ -1,3 +1,4 @@
+export * from './activity-dtos';
 export * from './backup-dtos';
 export * from './backup-errors';
 export * from './catalog-dtos';

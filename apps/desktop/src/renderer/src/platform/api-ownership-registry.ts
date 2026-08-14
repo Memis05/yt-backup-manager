@@ -240,6 +240,46 @@ export const YTBM_API_OWNERSHIP_REGISTRY = Object.freeze({
     currentFeature: 'Backup runs and notification routing',
     targetOwner: 'features/activity/controller',
   },
+  listActivityOperations: {
+    legacyCaller: 'no renderer caller',
+    currentFeature: 'Activity and notification routing',
+    targetOwner: 'features/activity/controller',
+  },
+  getActivityOperationDetails: {
+    legacyCaller: 'no renderer caller',
+    currentFeature: 'Activity and notification routing',
+    targetOwner: 'features/activity/controller',
+  },
+  controlActivityOperation: {
+    legacyCaller: 'no renderer caller',
+    currentFeature: 'Activity and notification routing',
+    targetOwner: 'features/activity/controller',
+  },
+  listBackupRunHistory: {
+    legacyCaller: 'no renderer caller',
+    currentFeature: 'Backup runs and notification routing',
+    targetOwner: 'features/activity/controller',
+  },
+  getActivityRunDetails: {
+    legacyCaller: 'no renderer caller',
+    currentFeature: 'Backup runs and notification routing',
+    targetOwner: 'features/activity/controller',
+  },
+  listActivityLog: {
+    legacyCaller: 'no renderer caller',
+    currentFeature: 'Activity and notification routing',
+    targetOwner: 'features/activity/controller',
+  },
+  listActivityAttention: {
+    legacyCaller: 'no renderer caller',
+    currentFeature: 'Activity and notification routing',
+    targetOwner: 'features/activity/controller',
+  },
+  resolveActivityEntity: {
+    legacyCaller: 'no renderer caller',
+    currentFeature: 'internal notification routing',
+    targetOwner: 'app/internal-route-adapter',
+  },
   controlBackupRun: {
     legacyCaller: 'App.tsx',
     currentFeature: 'Backup runs and notification routing',

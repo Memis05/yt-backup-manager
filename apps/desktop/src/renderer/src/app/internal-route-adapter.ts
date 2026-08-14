@@ -2,10 +2,11 @@ import type { InternalRoute } from '@ytbm/core';
 
 import type { AppRoute } from './routes';
 
-export type ActivityEntityView = 'active' | 'attention';
+export type ActivityEntityView = 'active' | 'history' | 'attention';
 
 export interface ResolvedActivityEntity {
   entityId: string;
+  routeEntityId?: string;
   view: ActivityEntityView;
 }
 
@@ -118,7 +119,11 @@ export function resolveInternalRoute(
         return unresolvedResolution(parent, knownIds);
       }
       return {
-        route: { area: 'activity', view: entity.view, entityId },
+        route: {
+          area: 'activity',
+          view: entity.view,
+          entityId: entity.routeEntityId ?? entityId,
+        },
         entityResolution: 'resolved',
         fallbackMessage: null,
       };

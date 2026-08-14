@@ -326,7 +326,6 @@ describe('Phase 7B.4 Channels', () => {
       expect(onNavigate).toHaveBeenCalledWith({
         area: 'activity',
         view: 'active',
-        entityId: '00000000-0000-4000-8000-000000000099',
       }),
     );
   });

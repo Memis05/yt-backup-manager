@@ -905,7 +905,7 @@ function ChannelDetails({
 
 export function ChannelsScreen({ route, onNavigate, notice, onNotice }: ChannelsScreenProps) {
   const controller = useChannelsController({
-    onBackupAccepted: (runId) => onNavigate({ area: 'activity', view: 'active', entityId: runId }),
+    onBackupAccepted: () => onNavigate({ area: 'activity', view: 'active' }),
   });
   const [toggleTarget, setToggleTarget] = useState<ChannelDto | null>(null);
   const [qualityTarget, setQualityTarget] = useState<QualityProfile | null | undefined>(undefined);

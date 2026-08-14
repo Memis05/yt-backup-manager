@@ -50,17 +50,21 @@ const userData = join(temporary, 'user-data');
 const localData = join(temporary, 'local-data');
 const environment = { ...process.env };
 delete environment.ELECTRON_RUN_AS_NODE;
-const child = spawn(executable, ['--disable-gpu', '--disable-software-rasterizer', '--worker'], {
-  shell: false,
-  windowsHide: true,
-  stdio: ['ignore', 'pipe', 'pipe'],
-  env: {
-    ...environment,
-    YTBM_ENVIRONMENT: 'test',
-    YTBM_USER_DATA_PATH: userData,
-    YTBM_LOCAL_DATA_PATH: localData,
+const child = spawn(
+  executable,
+  ['--disable-gpu', '--disable-software-rasterizer', '--in-process-gpu', '--worker'],
+  {
+    shell: false,
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: {
+      ...environment,
+      YTBM_ENVIRONMENT: 'test',
+      YTBM_USER_DATA_PATH: userData,
+      YTBM_LOCAL_DATA_PATH: localData,
+    },
   },
-});
+);
 let processOutput = '';
 child.stdout.setEncoding('utf8');
 child.stderr.setEncoding('utf8');

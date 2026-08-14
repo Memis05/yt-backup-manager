@@ -304,6 +304,18 @@ export class WorkerRuntime {
           this.localBackup!.controlRun(runId, action);
           return { accepted: true };
         },
+        'activity.operations': (query) => this.localBackup!.activityOperations(query),
+        'activity.operationDetails': (query) => this.localBackup!.activityOperationDetails(query),
+        'activity.controlOperation': ({ operationId, action }) => {
+          this.localBackup!.controlActivityOperation(operationId, action);
+          return { accepted: true } as const;
+        },
+        'activity.runHistory': (query) => this.localBackup!.backupRunHistory(query),
+        'activity.runDetails': (query) => this.localBackup!.activityRunDetails(query),
+        'activity.log': (query) => this.localBackup!.activityLog(query),
+        'activity.attention': (query) => this.localBackup!.activityAttention(query),
+        'activity.resolveEntity': ({ entityId }) =>
+          this.localBackup!.resolveActivityEntity(entityId),
         'jobs.snapshot': (query) => this.localBackup!.queueSnapshot(query),
         'jobs.control': ({ jobId, action }) => this.localBackup!.controlJob(jobId, action),
         'media.backupDetails': ({ mediaItemId }) =>

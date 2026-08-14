@@ -20,6 +20,8 @@ const CONTROLLER_OWNER = {
   oauthStatus: 'oauth-status',
   sourceSync: 'source-sync',
   activity: 'activity',
+  activityHistory: 'activity-history',
+  activityDetails: 'activity-details',
   integrity: 'integrity',
   recovery: 'recovery',
   library: 'library',
@@ -82,6 +84,26 @@ export function useActivityController<Result>(
     ownerKey: CONTROLLER_OWNER.activity,
     intervalMs: CONTROLLER_CADENCE_MS.activity,
     immediate: true,
+  });
+}
+
+/** Loads paged Activity history without polling completed state every second. */
+export function useActivityHistoryController<Result>(
+  options: LoadFeatureControllerOptions<Result>,
+): FeatureController {
+  return useLoadController({
+    ...options,
+    ownerKey: CONTROLLER_OWNER.activityHistory,
+  });
+}
+
+/** Loads technical Activity details only while a details surface is open. */
+export function useActivityDetailsController<Result>(
+  options: LoadFeatureControllerOptions<Result>,
+): FeatureController {
+  return useLoadController({
+    ...options,
+    ownerKey: CONTROLLER_OWNER.activityDetails,
   });
 }
 
