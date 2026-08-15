@@ -1,0 +1,4 @@
+# Per-skill toggles. Add paths as you create project skills.
+[[skills.config]]
+path = ".codex/skills/taste/SKILL.md"
+enabled = true

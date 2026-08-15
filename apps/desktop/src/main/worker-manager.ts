@@ -3,7 +3,12 @@ import { createConnection } from 'node:net';
 
 import { type App } from 'electron';
 
-import { WorkerRpcClient, createUserScopedEndpoints } from '@ytbm/ipc';
+import {
+  RpcProtocolError,
+  WORKER_RPC_PROTOCOL_VERSION,
+  WorkerRpcClient,
+  createUserScopedEndpoints,
+} from '@ytbm/ipc';
 import { RpcAuthTokenStore, type StructuredLogger } from '@ytbm/security';
 
 import type { RuntimeConfig } from '../config/runtime';
@@ -35,9 +40,30 @@ export async function waitForWorkerEndpointRelease(
   throw new Error('The outdated backup worker did not release its process lock in time.');
 }
 
+type WorkerControlClient = Pick<WorkerRpcClient, 'request'>;
+
+export async function readWorkerRpcProtocolVersion(client: WorkerControlClient): Promise<number> {
+  try {
+    return (await client.request('worker.protocol', {})).version;
+  } catch (error) {
+    if (error instanceof RpcProtocolError && error.code === 'METHOD_NOT_FOUND') return 0;
+    throw error;
+  }
+}
+
+export async function requestWorkerShutdownForReplacement(
+  client: WorkerControlClient,
+): Promise<'IMMEDIATE' | 'WHEN_IDLE'> {
+  const shutdown = await client.request('worker.shutdownIfIdle', {});
+  if (shutdown.accepted) return 'IMMEDIATE';
+  await client.request('worker.shutdownWhenIdle', {});
+  return 'WHEN_IDLE';
+}
+
 export class DesktopWorkerManager {
   private client: WorkerRpcClient | null = null;
   private spawnedProcess: ChildProcess | null = null;
+  private currentProtocolPromise: Promise<void> = Promise.resolve();
 
   public constructor(
     private readonly app: App,
@@ -63,13 +89,42 @@ export class DesktopWorkerManager {
       this.logger.info('Connected to spawned worker');
     }
 
+    let protocolVersion = await readWorkerRpcProtocolVersion(client);
+    if (protocolVersion > WORKER_RPC_PROTOCOL_VERSION) {
+      throw new Error(
+        'The running backup worker is newer than this desktop application. Start the matching application version.',
+      );
+    }
+    if (protocolVersion < WORKER_RPC_PROTOCOL_VERSION) {
+      if (!connectedToExistingWorker) {
+        throw new Error('The bundled backup worker uses an incompatible RPC protocol.');
+      }
+      const shutdownMode = await requestWorkerShutdownForReplacement(client);
+      if (shutdownMode === 'IMMEDIATE') {
+        this.logger.info('Replacing an idle outdated worker');
+        await this.restartWorker(client, endpoints.singleton);
+        connectedToExistingWorker = false;
+        protocolVersion = await readWorkerRpcProtocolVersion(client);
+        this.logger.info('Replaced outdated worker with the current RPC protocol', {
+          protocolVersion,
+        });
+      } else {
+        this.logger.info('Draining an outdated worker in the background', { shutdownMode });
+        this.currentProtocolPromise = this.replaceOutdatedWorker(client, endpoints.singleton);
+        void this.currentProtocolPromise.catch((error: unknown) => {
+          this.logger.error('Background worker replacement failed', {
+            exceptionType: error instanceof Error ? error.name : typeof error,
+          });
+        });
+        this.client = client;
+        return client;
+      }
+    }
+
     if (connectedToExistingWorker && this.config.environment === 'development') {
       const shutdown = await client.request('worker.shutdownIfIdle', {});
       if (shutdown.accepted) {
-        await waitForWorkerEndpointRelease(endpoints.singleton);
-        client.close();
-        this.spawnWorker();
-        await client.waitUntilConnected(10_000);
+        await this.restartWorker(client, endpoints.singleton);
         connectedToExistingWorker = false;
         this.logger.info('Replaced idle development worker to load the current application code');
       } else {
@@ -89,10 +144,7 @@ export class DesktopWorkerManager {
           { cause: error },
         );
       }
-      await waitForWorkerEndpointRelease(endpoints.singleton);
-      client.close();
-      this.spawnWorker();
-      await client.waitUntilConnected(10_000);
+      await this.restartWorker(client, endpoints.singleton);
       await this.configureGoogleOAuth(client);
       this.logger.info('Replaced an outdated idle worker to refresh OAuth configuration');
     }
@@ -110,6 +162,16 @@ export class DesktopWorkerManager {
     return this.spawnedProcess?.pid ?? null;
   }
 
+  public waitForCurrentProtocol(): Promise<void> {
+    return this.currentProtocolPromise;
+  }
+
+  public terminateSpawnedWorkerForTest(): void {
+    if (this.config.environment !== 'test') return;
+    if (this.spawnedProcess?.exitCode === null) this.spawnedProcess.kill();
+    this.spawnedProcess = null;
+  }
+
   private configureGoogleOAuth(client: WorkerRpcClient): Promise<{ configured: boolean }> {
     return client.request('accounts.oauthConfigure', {
       clientId: this.config.googleOAuthClientId,
@@ -117,15 +179,36 @@ export class DesktopWorkerManager {
     });
   }
 
+  private async replaceOutdatedWorker(
+    client: WorkerRpcClient,
+    singletonEndpoint: string,
+  ): Promise<void> {
+    await this.restartWorker(client, singletonEndpoint);
+    await this.configureGoogleOAuth(client);
+    this.logger.info('Replaced drained worker with the current RPC protocol', {
+      protocolVersion: WORKER_RPC_PROTOCOL_VERSION,
+    });
+  }
+
+  private async restartWorker(client: WorkerRpcClient, singletonEndpoint: string): Promise<void> {
+    await waitForWorkerEndpointRelease(singletonEndpoint);
+    client.close();
+    this.spawnWorker();
+    await client.waitUntilConnected(10_000);
+    const protocolVersion = await readWorkerRpcProtocolVersion(client);
+    if (protocolVersion !== WORKER_RPC_PROTOCOL_VERSION) {
+      throw new Error('The replacement backup worker uses an incompatible RPC protocol.');
+    }
+  }
+
   private spawnWorker(): void {
+    const gpuArgs =
+      this.config.environment === 'test'
+        ? ['--disable-gpu', '--disable-software-rasterizer', '--in-process-gpu']
+        : ['--disable-gpu'];
     const args = this.app.isPackaged
-      ? ['--disable-gpu', '--worker', '--spawned-by-desktop']
-      : [
-          process.argv[1] ?? this.app.getAppPath(),
-          '--disable-gpu',
-          '--worker',
-          '--spawned-by-desktop',
-        ];
+      ? [...gpuArgs, '--worker', '--spawned-by-desktop']
+      : [process.argv[1] ?? this.app.getAppPath(), ...gpuArgs, '--worker', '--spawned-by-desktop'];
     this.spawnedProcess = spawn(process.execPath, args, {
       detached: true,
       windowsHide: true,

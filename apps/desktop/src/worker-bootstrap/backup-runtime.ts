@@ -11,9 +11,24 @@ import {
   ToolDiagnosticsSchema,
   destinationAvailabilityError,
   type AppSettings,
+  type ActivityAttentionPage,
+  type ActivityAttentionQuery,
+  type ActivityEntityResolution,
+  type ActivityLogPage,
+  type ActivityLogQuery,
+  type ActivityOperationDetails,
+  type ActivityOperationDetailsQuery,
+  type ActivityOperationsPage,
+  type ActivityOperationsQuery,
+  type ActivityRunDetails,
+  type ActivityRunDetailsQuery,
+  type BackupRunHistoryPage,
+  type BackupRunHistoryQuery,
   type BackupStartResult,
   type BackupRunTrigger,
   type ChannelBackupSettingsDto,
+  type ChannelQualityChangePreview,
+  type ChannelQualityChangeResult,
   type DestinationDto,
   type DashboardSummary,
   type IntegrityOverview,
@@ -31,6 +46,7 @@ import {
   type ToolDiagnostics,
 } from '@ytbm/core';
 import {
+  ActivitySqlRepository,
   DurableJobSqlRepository,
   LocalBackupRepository,
   type BackupMediaContext,
@@ -313,6 +329,7 @@ export class LocalBackupRuntime {
   private readonly googleDriveStorage: GoogleDriveStorageProvider | null;
   private readonly repository: LocalBackupRepository;
   private readonly jobs: DurableJobSqlRepository;
+  private readonly activity: ActivitySqlRepository;
   private readonly ytDlp: Pick<YtDlpAdapter, 'version' | 'probe' | 'download'>;
   private readonly ffmpeg: Pick<FfmpegAdapter, 'version' | 'postProcess'>;
   private readonly engine: DurableJobEngine;
@@ -327,6 +344,7 @@ export class LocalBackupRuntime {
     this.fetchImplementation = options.fetch ?? fetch;
     this.repository = new LocalBackupRepository(options.database, this.now);
     this.jobs = new DurableJobSqlRepository(options.database);
+    this.activity = new ActivitySqlRepository(options.database);
     this.storage = options.storage ?? new FilesystemStorageProvider();
     this.googleDriveStorage = options.googleDriveStorage ?? null;
     this.ytDlp = options.ytDlp ?? new YtDlpAdapter(options.ytDlpExecutable);
@@ -383,7 +401,11 @@ export class LocalBackupRuntime {
     return true;
   }
 
-  public prepareShutdownWhenIdle(): void {}
+  public prepareShutdownWhenIdle(): void {
+    if (this.destinationProbeTimer !== null) clearInterval(this.destinationProbeTimer);
+    this.destinationProbeTimer = null;
+    this.engine.prepareShutdownWhenIdle();
+  }
 
   public lastIntegrityStartedAt(): number | null {
     const latest = this.options.database.sqlite
@@ -485,6 +507,42 @@ export class LocalBackupRuntime {
     );
   }
 
+  public async previewChannelQualityChange(
+    channelId: string,
+    qualityProfileOverride: QualityProfile | null,
+  ): Promise<ChannelQualityChangePreview> {
+    const settings = await this.options.settings();
+    return this.repository.previewChannelQualityChange(
+      channelId,
+      qualityProfileOverride,
+      settings.defaultQualityProfile,
+    );
+  }
+
+  public async applyChannelQualityChange(input: {
+    channelId: string;
+    qualityProfileOverride: QualityProfile | null;
+    policy: 'NEW_MEDIA_ONLY';
+  }): Promise<ChannelQualityChangeResult> {
+    const settings = await this.options.settings();
+    const preview = this.repository.previewChannelQualityChange(
+      input.channelId,
+      input.qualityProfileOverride,
+      settings.defaultQualityProfile,
+    );
+    const current = this.repository.getChannelSettings(
+      input.channelId,
+      settings.defaultQualityProfile,
+    );
+    const updated = this.repository.setChannelSettings(
+      input.channelId,
+      input.qualityProfileOverride,
+      current.destinationIds,
+      settings.defaultQualityProfile,
+    );
+    return { settings: updated, preview, appliedPolicy: input.policy };
+  }
+
   public async startBackup(
     channelId: string,
     triggerType: Extract<
@@ -548,6 +606,50 @@ export class LocalBackupRuntime {
   public listRuns() {
     this.repository.reconcileAllRuns();
     return this.repository.listRuns();
+  }
+
+  public activityOperations(query: ActivityOperationsQuery): ActivityOperationsPage {
+    this.repository.reconcileAllRuns();
+    return this.activity.listOperations(query);
+  }
+
+  public activityOperationDetails(query: ActivityOperationDetailsQuery): ActivityOperationDetails {
+    this.repository.reconcileAllRuns();
+    return this.activity.operationDetails(query);
+  }
+
+  public controlActivityOperation(
+    operationId: string,
+    action: 'PAUSE' | 'RESUME' | 'CANCEL_KEEP_PARTIAL',
+  ): void {
+    const jobIds = this.activity.operationJobIds(operationId, action);
+    if (jobIds.length === 0) throw new Error('This operation no longer supports that action.');
+    for (const jobId of jobIds) this.jobs.controlJob(jobId, action, this.now());
+    this.engine.wake();
+    this.repository.reconcileAllRuns();
+  }
+
+  public backupRunHistory(query: BackupRunHistoryQuery): BackupRunHistoryPage {
+    this.repository.reconcileAllRuns();
+    return this.activity.listRunHistory(query);
+  }
+
+  public activityRunDetails(query: ActivityRunDetailsQuery): ActivityRunDetails {
+    this.repository.reconcileAllRuns();
+    return this.activity.runDetails(query);
+  }
+
+  public activityLog(query: ActivityLogQuery): ActivityLogPage {
+    return this.activity.listLog(query);
+  }
+
+  public activityAttention(query: ActivityAttentionQuery): ActivityAttentionPage {
+    this.repository.reconcileAllRuns();
+    return this.activity.listAttention(query);
+  }
+
+  public resolveActivityEntity(entityId: string): ActivityEntityResolution {
+    return this.activity.resolveEntity(entityId);
   }
 
   public mediaDetails(mediaItemId: string): MediaBackupDetails {

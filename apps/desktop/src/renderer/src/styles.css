@@ -1,23 +1,20 @@
 @import 'tailwindcss';
+@import './ui/tokens.css';
+@import './ui/primitives.css';
+@import './shell/shell.css';
 
 :root {
-  --accent: #ef3d45;
-  --border: #213047;
-  --muted: #7d8da3;
-  --panel: #0d1828;
-  --surface: #0f172a;
-  --text: #e8edf5;
-  color-scheme: dark;
-  font-family:
-    Inter,
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    BlinkMacSystemFont,
-    'Segoe UI',
-    sans-serif;
-  background: #07101d;
-  color: #e8edf5;
+  /* Temporary aliases for legacy route bodies. New shell and primitives use semantic tokens. */
+  --accent: var(--color-brand-action);
+  --border: var(--color-border-subtle);
+  --line: var(--color-border-subtle);
+  --muted: var(--color-text-muted);
+  --panel: var(--color-surface-1);
+  --surface: var(--color-surface-2);
+  --text: var(--color-text-primary);
+  font-family: var(--font-sans);
+  background: var(--color-canvas);
+  color: var(--color-text-primary);
   font-synthesis: none;
 }
 
@@ -355,11 +352,34 @@
 * {
   box-sizing: border-box;
 }
+
+html,
 body {
   margin: 0;
-  min-width: 320px;
-  min-height: 100vh;
-  background: #07101d;
+  min-width: 0;
+  min-height: 100%;
+  background: var(--color-canvas);
+  color: var(--color-text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--font-size-body);
+  line-height: var(--line-height-body);
+  text-rendering: optimizeLegibility;
+}
+
+#root {
+  min-width: 0;
+  height: 100dvh;
+  min-height: 0;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-brand-accent) 38%, transparent);
+  color: var(--color-text-primary);
 }
 button,
 input,
@@ -464,8 +484,8 @@ button {
 
 .content {
   min-width: 0;
-  padding: 30px clamp(26px, 4vw, 58px) 56px;
-  background: radial-gradient(circle at 85% 0%, #172033 0, transparent 30%), #07101d;
+  padding: 28px 28px var(--space-12);
+  background: var(--color-canvas);
 }
 .topbar {
   display: flex;
@@ -1348,5 +1368,259 @@ button {
   .settings-grid,
   .recovery-layout {
     grid-template-columns: 1fr;
+  }
+}
+
+/*
+ * Stage 3 compatibility surface: legacy route bodies retain their behavior and
+ * layout while inheriting the neutral Phase 7 shell vocabulary. These aliases
+ * disappear route-by-route in later migration stages.
+ */
+.legacy-route-outlet {
+  width: 100%;
+  min-height: 100%;
+  color: var(--color-text-primary);
+}
+
+.legacy-page-header {
+  display: flex;
+  min-height: 48px;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-5);
+  margin-bottom: var(--space-6);
+}
+
+.legacy-page-header h1,
+.legacy-page-header p {
+  margin: 0;
+}
+
+.legacy-page-header h1 {
+  font-size: var(--font-size-page-title);
+  line-height: var(--line-height-page-title);
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+.legacy-page-header p {
+  margin-top: var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-secondary);
+  line-height: var(--line-height-secondary);
+}
+
+.legacy-local-navigation {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.legacy-local-navigation button {
+  position: relative;
+  min-height: var(--control-height-default);
+  border: 0;
+  padding: 0 var(--space-3);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-secondary);
+  line-height: var(--line-height-secondary);
+  cursor: pointer;
+}
+
+.legacy-local-navigation button:hover {
+  color: var(--color-text-primary);
+}
+
+.legacy-local-navigation button[aria-current='page'] {
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.legacy-local-navigation button[aria-current='page']::after {
+  position: absolute;
+  right: var(--space-2);
+  bottom: -1px;
+  left: var(--space-2);
+  height: 2px;
+  background: var(--color-brand-accent);
+  content: '';
+}
+
+.legacy-route-outlet .section-heading p,
+.legacy-route-outlet .result-count,
+.legacy-route-outlet small,
+.legacy-route-outlet .dashboard-last-run,
+.legacy-route-outlet .queue-explanation,
+.legacy-route-outlet .queue-destinations,
+.legacy-route-outlet .queue-completed-summary small {
+  color: var(--color-text-muted);
+}
+
+.legacy-route-outlet .eyebrow {
+  color: var(--color-brand-accent);
+  font-size: var(--font-size-caption);
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.legacy-route-outlet .button {
+  min-height: var(--control-height-default);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-3);
+  font-size: var(--font-size-caption);
+}
+
+.legacy-route-outlet .button--primary {
+  background: var(--color-brand-action);
+  box-shadow: none;
+}
+
+.legacy-route-outlet .button--primary:hover:not(:disabled) {
+  background: var(--color-brand-action-hover);
+}
+
+.legacy-route-outlet .button--secondary,
+.legacy-route-outlet .queue-actions button {
+  border-color: var(--color-border-subtle);
+  background: var(--color-surface-2);
+  color: var(--color-text-primary);
+}
+
+.legacy-route-outlet .button--danger {
+  border-color: var(--color-status-danger-border);
+  color: var(--color-status-danger);
+}
+
+.legacy-route-outlet
+  :is(
+    .dashboard-grid article,
+    .destination-card,
+    .backup-channel-card,
+    .run-row,
+    .queue-row,
+    .account-card,
+    .channel-card,
+    .media-card,
+    .media-row,
+    .playlist-detail,
+    .settings-card,
+    .recovery-panel,
+    .panel,
+    .storage-add,
+    .tool-diagnostics > div
+  ) {
+  border-color: var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-1);
+  box-shadow: none;
+}
+
+.legacy-route-outlet :is(.selection-list, .media-table, .playlist-layout, .count-grid) {
+  border-color: var(--color-border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.legacy-route-outlet :is(.selection-row, .media-row--head, .playlist-list) {
+  border-color: var(--color-border-subtle);
+  background: var(--color-surface-2);
+}
+
+.legacy-route-outlet :is(.playlist-row, .membership-list li, .playlist-detail-head) {
+  border-color: var(--color-border-subtle);
+}
+
+.legacy-route-outlet :is(.playlist-row:hover, .playlist-row--active) {
+  background: var(--color-surface-hover);
+}
+
+.legacy-route-outlet :is(.toolbar input, .toolbar select, .view-toggle) {
+  border-color: var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  color: var(--color-text-primary);
+}
+
+.legacy-route-outlet .view-toggle button.active {
+  background: var(--color-surface-pressed);
+}
+
+.legacy-route-outlet .loading-panel,
+.legacy-route-outlet .oauth-wait {
+  border-color: var(--color-border-subtle);
+  background: var(--color-surface-1);
+  color: var(--color-text-secondary);
+}
+
+.legacy-route-outlet .empty-state {
+  border-color: var(--color-border-subtle);
+  background: transparent;
+}
+
+.legacy-route-outlet .welcome-panel {
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--color-surface-1);
+}
+
+.legacy-route-outlet .state-pill {
+  background: var(--color-status-neutral-bg);
+  color: var(--color-status-neutral);
+  letter-spacing: 0;
+}
+
+.legacy-route-outlet .state-pill--success {
+  background: var(--color-status-healthy-bg);
+  color: var(--color-status-healthy);
+}
+
+.legacy-route-outlet .state-pill--warning {
+  background: var(--color-status-warning-bg);
+  color: var(--color-status-warning);
+}
+
+.legacy-route-outlet .state-pill--danger,
+.legacy-route-outlet .card-error {
+  background: var(--color-status-danger-bg);
+  color: var(--color-status-danger) !important;
+}
+
+.legacy-route-outlet .notice--success {
+  border-color: var(--color-status-healthy-border);
+  background: var(--color-status-healthy-bg);
+  color: var(--color-status-healthy);
+}
+
+.legacy-route-outlet .notice--error {
+  border-color: var(--color-status-danger-border);
+  background: var(--color-status-danger-bg);
+  color: var(--color-status-danger);
+}
+
+.legacy-route-outlet .progress {
+  background: var(--color-surface-pressed);
+}
+
+.legacy-route-outlet .progress span {
+  background: var(--color-brand-accent);
+}
+
+@media (min-width: 1440px) {
+  .content {
+    padding-inline: var(--space-8);
+  }
+}
+
+@media (max-width: 1039px) {
+  .content {
+    padding: var(--space-6) var(--space-5) var(--space-10);
+  }
+
+  .legacy-page-header {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }

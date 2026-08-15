@@ -1,15 +1,33 @@
 import { contextBridge, ipcRenderer } from 'electron';
 
 import {
+  ActivityAttentionPageSchema,
+  ActivityAttentionQuerySchema,
+  ActivityEntityResolutionSchema,
+  ActivityLogPageSchema,
+  ActivityLogQuerySchema,
+  ActivityOperationControlSchema,
+  ActivityOperationDetailsQuerySchema,
+  ActivityOperationDetailsSchema,
+  ActivityOperationsPageSchema,
+  ActivityOperationsQuerySchema,
+  ActivityRunDetailsQuerySchema,
+  ActivityRunDetailsSchema,
   AccountDtoSchema,
   AccountsListResultSchema,
   AppSettingsSchema,
   BackupRunsListResultSchema,
+  BackupRunHistoryPageSchema,
+  BackupRunHistoryQuerySchema,
   BackupStartResultSchema,
   CatalogQuerySchema,
   ChannelDtoSchema,
   ChannelBackupSettingsDtoSchema,
   ChannelBackupSettingsPatchSchema,
+  ChannelQualityChangeApplySchema,
+  ChannelQualityChangePreviewSchema,
+  ChannelQualityChangeRequestSchema,
+  ChannelQualityChangeResultSchema,
   ChannelsListResultSchema,
   DestinationsListResultSchema,
   DestinationDtoSchema,
@@ -41,13 +59,30 @@ import {
   SchedulesListResultSchema,
   RepairStartResultSchema,
   type AccountDto,
+  type ActivityAttentionPage,
+  type ActivityAttentionQuery,
+  type ActivityEntityResolution,
+  type ActivityLogPage,
+  type ActivityLogQuery,
+  type ActivityOperationDetails,
+  type ActivityOperationDetailsQuery,
+  type ActivityOperationsPage,
+  type ActivityOperationsQuery,
+  type ActivityRunDetails,
+  type ActivityRunDetailsQuery,
   type AppSettings,
   type BackupRunDto,
+  type BackupRunHistoryPage,
+  type BackupRunHistoryQuery,
   type BackupStartResult,
   type CatalogQuery,
   type ChannelDto,
   type ChannelBackupSettingsDto,
   type ChannelBackupSettingsPatch,
+  type ChannelQualityChangeApply,
+  type ChannelQualityChangePreview,
+  type ChannelQualityChangeRequest,
+  type ChannelQualityChangeResult,
   type DestinationDto,
   type DashboardSummary,
   type FoundationStatus,
@@ -120,8 +155,22 @@ export interface YouTubeBackupManagerApi {
   disableDestination(destinationId: string): Promise<void>;
   getChannelBackupSettings(channelId: string): Promise<ChannelBackupSettingsDto>;
   updateChannelBackupSettings(input: ChannelBackupSettingsPatch): Promise<ChannelBackupSettingsDto>;
+  previewChannelQualityChange(
+    input: ChannelQualityChangeRequest,
+  ): Promise<ChannelQualityChangePreview>;
+  applyChannelQualityChange(input: ChannelQualityChangeApply): Promise<ChannelQualityChangeResult>;
   startBackup(channelId: string): Promise<BackupStartResult>;
   listBackupRuns(): Promise<BackupRunDto[]>;
+  listActivityOperations(query: ActivityOperationsQuery): Promise<ActivityOperationsPage>;
+  getActivityOperationDetails(
+    query: ActivityOperationDetailsQuery,
+  ): Promise<ActivityOperationDetails>;
+  controlActivityOperation(operationId: string, action: RunControlAction): Promise<void>;
+  listBackupRunHistory(query: BackupRunHistoryQuery): Promise<BackupRunHistoryPage>;
+  getActivityRunDetails(query: ActivityRunDetailsQuery): Promise<ActivityRunDetails>;
+  listActivityLog(query: ActivityLogQuery): Promise<ActivityLogPage>;
+  listActivityAttention(query: ActivityAttentionQuery): Promise<ActivityAttentionPage>;
+  resolveActivityEntity(entityId: string): Promise<ActivityEntityResolution>;
   controlBackupRun(runId: string, action: RunControlAction): Promise<void>;
   getQueueSnapshot(query: QueueQuery): Promise<QueueSnapshot>;
   controlJob(jobId: string, action: JobControlAction): Promise<QueueJobDto>;
@@ -321,6 +370,26 @@ const api: YouTubeBackupManagerApi = Object.freeze({
     );
     return ChannelBackupSettingsDtoSchema.parse(response);
   },
+  async previewChannelQualityChange(
+    inputValue: ChannelQualityChangeRequest,
+  ): Promise<ChannelQualityChangePreview> {
+    const input = ChannelQualityChangeRequestSchema.parse(inputValue);
+    const response = await ipcRenderer.invoke(
+      DESKTOP_IPC_CHANNELS.previewChannelQualityChange,
+      input,
+    );
+    return ChannelQualityChangePreviewSchema.parse(response);
+  },
+  async applyChannelQualityChange(
+    inputValue: ChannelQualityChangeApply,
+  ): Promise<ChannelQualityChangeResult> {
+    const input = ChannelQualityChangeApplySchema.parse(inputValue);
+    const response = await ipcRenderer.invoke(
+      DESKTOP_IPC_CHANNELS.applyChannelQualityChange,
+      input,
+    );
+    return ChannelQualityChangeResultSchema.parse(response);
+  },
   async startBackup(channelId: string): Promise<BackupStartResult> {
     const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.startBackup, { channelId });
     return BackupStartResultSchema.parse(response);
@@ -328,6 +397,51 @@ const api: YouTubeBackupManagerApi = Object.freeze({
   async listBackupRuns(): Promise<BackupRunDto[]> {
     const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.backupRuns, {});
     return BackupRunsListResultSchema.parse(response).runs;
+  },
+  async listActivityOperations(
+    queryValue: ActivityOperationsQuery,
+  ): Promise<ActivityOperationsPage> {
+    const query = ActivityOperationsQuerySchema.parse(queryValue);
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.activityOperations, query);
+    return ActivityOperationsPageSchema.parse(response);
+  },
+  async getActivityOperationDetails(
+    queryValue: ActivityOperationDetailsQuery,
+  ): Promise<ActivityOperationDetails> {
+    const query = ActivityOperationDetailsQuerySchema.parse(queryValue);
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.activityOperationDetails, query);
+    return ActivityOperationDetailsSchema.parse(response);
+  },
+  async controlActivityOperation(operationId: string, action: RunControlAction): Promise<void> {
+    const input = ActivityOperationControlSchema.parse({ operationId, action });
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.controlActivityOperation, input);
+    if (response?.accepted !== true) throw new Error('The activity control was not accepted.');
+  },
+  async listBackupRunHistory(queryValue: BackupRunHistoryQuery): Promise<BackupRunHistoryPage> {
+    const query = BackupRunHistoryQuerySchema.parse(queryValue);
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.activityRunHistory, query);
+    return BackupRunHistoryPageSchema.parse(response);
+  },
+  async getActivityRunDetails(queryValue: ActivityRunDetailsQuery): Promise<ActivityRunDetails> {
+    const query = ActivityRunDetailsQuerySchema.parse(queryValue);
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.activityRunDetails, query);
+    return ActivityRunDetailsSchema.parse(response);
+  },
+  async listActivityLog(queryValue: ActivityLogQuery): Promise<ActivityLogPage> {
+    const query = ActivityLogQuerySchema.parse(queryValue);
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.activityLog, query);
+    return ActivityLogPageSchema.parse(response);
+  },
+  async listActivityAttention(queryValue: ActivityAttentionQuery): Promise<ActivityAttentionPage> {
+    const query = ActivityAttentionQuerySchema.parse(queryValue);
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.activityAttention, query);
+    return ActivityAttentionPageSchema.parse(response);
+  },
+  async resolveActivityEntity(entityId: string): Promise<ActivityEntityResolution> {
+    const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.activityResolveEntity, {
+      entityId,
+    });
+    return ActivityEntityResolutionSchema.parse(response);
   },
   async controlBackupRun(runId: string, action: RunControlAction): Promise<void> {
     const response = await ipcRenderer.invoke(DESKTOP_IPC_CHANNELS.controlBackupRun, {

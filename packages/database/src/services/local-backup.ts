@@ -6,6 +6,7 @@ import {
   BackupRunsListResultSchema,
   BackupStartResultSchema,
   ChannelBackupSettingsDtoSchema,
+  ChannelQualityChangePreviewSchema,
   DashboardSummarySchema,
   IntegrityCheckDtoSchema,
   IntegrityOverviewSchema,
@@ -20,6 +21,7 @@ import {
   type BackupRunTrigger,
   type BackupStartResult,
   type ChannelBackupSettingsDto,
+  type ChannelQualityChangePreview,
   type AppSettings,
   type DashboardSummary,
   type IntegrityOverview,
@@ -100,6 +102,13 @@ export interface PlannedJobInput {
   errorCode?: string;
   safeMessage?: string;
 }
+
+const QUALITY_PROFILE_RANK: Readonly<Record<QualityProfile, number>> = {
+  MAX_720P: 0,
+  MAX_1080P: 1,
+  MAX_4K: 2,
+  BEST_AVAILABLE: 3,
+};
 
 export interface BackupMediaContext {
   id: string;
@@ -472,6 +481,13 @@ export class LocalBackupRepository {
       );
     if (previous.availabilityStatus !== availabilityStatus) {
       if (availabilityStatus === 'AUTH_REQUIRED') {
+        this.insertActivity({
+          eventType: 'AUTH_REQUIRED',
+          destinationId: id,
+          summary: 'Google Drive authorization is required before backup work can continue.',
+          severity: 'WARNING',
+          createdAt: changedAt,
+        });
         this.enqueueNotification({
           category: 'DRIVE_AUTH_REQUIRED',
           dedupKey: `destination:${id}:auth-required`,
@@ -485,6 +501,12 @@ export class LocalBackupRepository {
           .prepare('delete from notification_events where dedup_key = ?')
           .run(`destination:${id}:auth-required`);
         if (previous.availabilityStatus !== 'UNKNOWN') {
+          this.insertActivity({
+            eventType: 'DESTINATION_RECONNECTED',
+            destinationId: id,
+            summary: 'Google Drive reconnected and blocked backup work can resume.',
+            createdAt: changedAt,
+          });
           this.enqueueNotification({
             category: 'DESTINATION_RECONNECTED',
             dedupKey: `destination:${id}:reconnected:${changedAt}`,
@@ -494,6 +516,14 @@ export class LocalBackupRepository {
             entityId: id,
           });
         }
+      } else if (previous.availabilityStatus !== 'UNKNOWN') {
+        this.insertActivity({
+          eventType: 'DESTINATION_DISCONNECTED',
+          destinationId: id,
+          summary: 'Google Drive is unavailable and its backup work is waiting.',
+          severity: 'WARNING',
+          createdAt: changedAt,
+        });
       }
     }
     return this.getGoogleDriveDestination(id);
@@ -539,6 +569,13 @@ export class LocalBackupRepository {
       );
     if (previous.availabilityStatus !== input.availabilityStatus) {
       if (input.availabilityStatus === 'DISCONNECTED') {
+        this.insertActivity({
+          eventType: 'DESTINATION_DISCONNECTED',
+          destinationId: id,
+          summary: 'A local backup destination disconnected and its work is waiting.',
+          severity: 'WARNING',
+          createdAt: changedAt,
+        });
         this.enqueueNotification({
           category: 'DESTINATION_DISCONNECTED',
           dedupKey: `destination:${id}:disconnected`,
@@ -552,6 +589,12 @@ export class LocalBackupRepository {
           .prepare('delete from notification_events where dedup_key = ?')
           .run(`destination:${id}:disconnected`);
         if (previous.availabilityStatus !== 'UNKNOWN') {
+          this.insertActivity({
+            eventType: 'DESTINATION_RECONNECTED',
+            destinationId: id,
+            summary: 'A local backup destination reconnected and blocked work can resume.',
+            createdAt: changedAt,
+          });
           this.enqueueNotification({
             category: 'DESTINATION_RECONNECTED',
             dedupKey: `destination:${id}:reconnected:${changedAt}`,
@@ -601,6 +644,57 @@ export class LocalBackupRepository {
       qualityProfileOverride: override,
       effectiveQualityProfile: override ?? defaultQualityProfile,
       destinationIds: destinations.map((row) => row.destination_id),
+    });
+  }
+
+  public previewChannelQualityChange(
+    channelId: string,
+    qualityProfileOverride: QualityProfile | null,
+    defaultQualityProfile: QualityProfile,
+  ): ChannelQualityChangePreview {
+    const current = this.getChannelSettings(channelId, defaultQualityProfile);
+    const targetEffectiveQualityProfile = qualityProfileOverride ?? defaultQualityProfile;
+    const isQualityIncrease =
+      QUALITY_PROFILE_RANK[targetEffectiveQualityProfile] >
+      QUALITY_PROFILE_RANK[current.effectiveQualityProfile];
+    const selectedDestinationIds = current.destinationIds;
+
+    let eligibleMediaCount = 0;
+    let eligibleCopyCount = 0;
+    if (isQualityIncrease && selectedDestinationIds.length > 0) {
+      const placeholders = selectedDestinationIds.map(() => '?').join(', ');
+      const lowerProfiles = (Object.keys(QUALITY_PROFILE_RANK) as QualityProfile[]).filter(
+        (profile) =>
+          QUALITY_PROFILE_RANK[profile] < QUALITY_PROFILE_RANK[targetEffectiveQualityProfile],
+      );
+      const profilePlaceholders = lowerProfiles.map(() => '?').join(', ');
+      const counts = this.database.sqlite
+        .prepare(
+          `select count(distinct mc.media_item_id) as media_count, count(*) as copy_count
+           from media_copies mc
+           join media_items mi on mi.id = mc.media_item_id
+           where mi.channel_id = ? and mc.status = 'VERIFIED'
+             and mc.destination_id in (${placeholders})
+             and mc.quality_profile in (${profilePlaceholders})`,
+        )
+        .get(channelId, ...selectedDestinationIds, ...lowerProfiles) as {
+        media_count: number;
+        copy_count: number;
+      };
+      eligibleMediaCount = counts.media_count;
+      eligibleCopyCount = counts.copy_count;
+    }
+
+    return ChannelQualityChangePreviewSchema.parse({
+      channelId,
+      previousEffectiveQualityProfile: current.effectiveQualityProfile,
+      targetEffectiveQualityProfile,
+      isQualityIncrease,
+      eligibleMediaCount,
+      eligibleCopyCount,
+      upgradeExistingSupported: false,
+      unsupportedReason:
+        'Existing verified copies cannot be replaced by the current durable backup planner. The new quality applies only when media needs a new copy.',
     });
   }
 
@@ -2489,6 +2583,13 @@ export class LocalBackupRepository {
 
   public mediaBackupDetails(mediaItemId: string): MediaBackupDetails {
     const media = this.getMediaContext(mediaItemId);
+    const playlists = this.database.sqlite
+      .prepare(
+        `select p.id, p.title, p.source_status from playlist_items pi
+         join playlists p on p.id = pi.playlist_id
+         where pi.media_item_id = ? order by p.title collate nocase, p.id`,
+      )
+      .all(mediaItemId) as Array<{ id: string; title: string; source_status: string }>;
     const rows = this.database.sqlite
       .prepare(
         `select mc.*, d.destination_type, d.root_path, d.availability_status,
@@ -2501,9 +2602,20 @@ export class LocalBackupRepository {
     return MediaBackupDetailsSchema.parse({
       mediaItemId,
       providerMediaId: media.providerMediaId,
+      channelId: media.channelId,
+      channelTitle: media.channelTitle,
       title: media.title,
       mediaType: media.mediaType,
       sourceStatus: media.sourceStatus,
+      sourceUrl: media.sourceUrl,
+      thumbnailUrl: media.thumbnailUrl,
+      publishedAt: media.publishedAt,
+      durationSeconds: media.durationSeconds,
+      playlists: playlists.map((playlist) => ({
+        id: playlist.id,
+        title: playlist.title,
+        sourceStatus: playlist.source_status,
+      })),
       copies: rows.map((row) => ({
         id: row.id,
         destinationId: row.destination_id,

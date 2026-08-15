@@ -13,6 +13,17 @@
     "package:dir": "electron-builder --dir"
   },
   "dependencies": {
+    "@fontsource-variable/geist": "catalog:",
+    "@phosphor-icons/react": "catalog:",
+    "@radix-ui/react-checkbox": "catalog:",
+    "@radix-ui/react-context-menu": "catalog:",
+    "@radix-ui/react-dialog": "catalog:",
+    "@radix-ui/react-dropdown-menu": "catalog:",
+    "@radix-ui/react-select": "catalog:",
+    "@radix-ui/react-switch": "catalog:",
+    "@radix-ui/react-tabs": "catalog:",
+    "@radix-ui/react-toast": "catalog:",
+    "@radix-ui/react-tooltip": "catalog:",
     "@ytbm/core": "workspace:*",
     "@ytbm/database": "workspace:*",
     "@ytbm/download-ytdlp": "workspace:*",

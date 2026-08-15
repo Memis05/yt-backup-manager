@@ -5,7 +5,13 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { waitForWorkerEndpointRelease } from '../src/main/worker-manager';
+import { RpcProtocolError, WORKER_RPC_PROTOCOL_VERSION, type WorkerRpcClient } from '@ytbm/ipc';
+
+import {
+  readWorkerRpcProtocolVersion,
+  requestWorkerShutdownForReplacement,
+  waitForWorkerEndpointRelease,
+} from '../src/main/worker-manager';
 
 const servers: Server[] = [];
 const socketPaths: string[] = [];
@@ -36,6 +42,33 @@ async function listen(server: Server, path: string): Promise<void> {
 }
 
 describe('DesktopWorkerManager shutdown coordination', () => {
+  it('requires the worker protocol generation that includes Activity RPC methods', () => {
+    expect(WORKER_RPC_PROTOCOL_VERSION).toBe(2);
+  });
+
+  it('recognizes a worker from before protocol negotiation as version zero', async () => {
+    const client = {
+      request: async () => {
+        throw new RpcProtocolError('METHOD_NOT_FOUND', 'Worker RPC method is not allowed');
+      },
+    } as unknown as Pick<WorkerRpcClient, 'request'>;
+
+    await expect(readWorkerRpcProtocolVersion(client)).resolves.toBe(0);
+  });
+
+  it('requests a graceful drain when an outdated worker is not immediately idle', async () => {
+    const methods: string[] = [];
+    const client = {
+      request: async (method: string) => {
+        methods.push(method);
+        return method === 'worker.shutdownIfIdle' ? { accepted: false } : { accepted: true };
+      },
+    } as unknown as Pick<WorkerRpcClient, 'request'>;
+
+    await expect(requestWorkerShutdownForReplacement(client)).resolves.toBe('WHEN_IDLE');
+    expect(methods).toEqual(['worker.shutdownIfIdle', 'worker.shutdownWhenIdle']);
+  });
+
   it('waits for the worker singleton endpoint instead of only the RPC disconnect', async () => {
     const path = endpoint();
     const server = createServer((socket) => socket.destroy());

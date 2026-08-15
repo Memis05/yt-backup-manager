@@ -60,6 +60,17 @@ export const ChannelDtoSchema = z
   })
   .strict();
 
+export const MediaCopySummarySchema = z
+  .object({
+    copyCount: z.number().int().nonnegative(),
+    verifiedCount: z.number().int().nonnegative(),
+    pendingCount: z.number().int().nonnegative(),
+    attentionCount: z.number().int().nonnegative(),
+    unavailableCount: z.number().int().nonnegative(),
+    authRequiredCount: z.number().int().nonnegative(),
+  })
+  .strict();
+
 export const MediaLibraryItemDtoSchema = z
   .object({
     id: z.string().uuid(),
@@ -77,6 +88,7 @@ export const MediaLibraryItemDtoSchema = z
     firstSeenAt: EpochMillisecondsSchema,
     lastSeenAt: NullableEpochMillisecondsSchema,
     playlistTitles: z.array(z.string()),
+    copySummary: MediaCopySummarySchema,
   })
   .strict();
 
@@ -226,6 +238,7 @@ export const PlaylistMembersResultSchema = z
 export type AccountCapabilities = z.infer<typeof AccountCapabilitiesSchema>;
 export type AccountDto = z.infer<typeof AccountDtoSchema>;
 export type ChannelDto = z.infer<typeof ChannelDtoSchema>;
+export type MediaCopySummary = z.infer<typeof MediaCopySummarySchema>;
 export type MediaLibraryItemDto = z.infer<typeof MediaLibraryItemDtoSchema>;
 export type PlaylistDto = z.infer<typeof PlaylistDtoSchema>;
 export type PlaylistMemberDto = z.infer<typeof PlaylistMemberDtoSchema>;

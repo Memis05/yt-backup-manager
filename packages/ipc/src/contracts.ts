@@ -1,4 +1,16 @@
 import {
+  ActivityAttentionPageSchema,
+  ActivityAttentionQuerySchema,
+  ActivityEntityResolutionSchema,
+  ActivityLogPageSchema,
+  ActivityLogQuerySchema,
+  ActivityOperationControlSchema,
+  ActivityOperationDetailsQuerySchema,
+  ActivityOperationDetailsSchema,
+  ActivityOperationsPageSchema,
+  ActivityOperationsQuerySchema,
+  ActivityRunDetailsQuerySchema,
+  ActivityRunDetailsSchema,
   AccountDtoSchema,
   AccountsListResultSchema,
   AppSettingsSchema,
@@ -7,11 +19,17 @@ import {
   ChannelDtoSchema,
   ChannelBackupSettingsDtoSchema,
   ChannelBackupSettingsPatchSchema,
+  ChannelQualityChangeApplySchema,
+  ChannelQualityChangePreviewSchema,
+  ChannelQualityChangeRequestSchema,
+  ChannelQualityChangeResultSchema,
   ChannelsListResultSchema,
   DatabaseHealthSchema,
   DashboardSummarySchema,
   FoundationStatusSchema,
   BackupRunsListResultSchema,
+  BackupRunHistoryPageSchema,
+  BackupRunHistoryQuerySchema,
   BackupStartResultSchema,
   DestinationsListResultSchema,
   DestinationDtoSchema,
@@ -54,10 +72,26 @@ import { z } from 'zod';
 
 const EmptyParamsSchema = z.object({}).strict();
 
+/**
+ * Increment whenever the current desktop cannot safely use an already-running older worker.
+ * This includes additive methods that the current desktop requires, not only changed results.
+ *
+ * Version 2 adds the Phase 7B.5 Activity RPC surface.
+ */
+export const WORKER_RPC_PROTOCOL_VERSION = 2;
+
+export const WorkerRpcProtocolSchema = z
+  .object({ version: z.number().int().nonnegative() })
+  .strict();
+
 export const WorkerRpcContracts = {
   'worker.health': {
     params: EmptyParamsSchema,
     result: WorkerHealthSchema,
+  },
+  'worker.protocol': {
+    params: EmptyParamsSchema,
+    result: WorkerRpcProtocolSchema,
   },
   'worker.scheduledWake': {
     params: z
@@ -199,6 +233,14 @@ export const WorkerRpcContracts = {
     params: ChannelBackupSettingsPatchSchema,
     result: ChannelBackupSettingsDtoSchema,
   },
+  'backup.previewQualityChange': {
+    params: ChannelQualityChangeRequestSchema,
+    result: ChannelQualityChangePreviewSchema,
+  },
+  'backup.applyQualityChange': {
+    params: ChannelQualityChangeApplySchema,
+    result: ChannelQualityChangeResultSchema,
+  },
   'backup.start': {
     params: z.object({ channelId: z.string().uuid() }).strict(),
     result: BackupStartResultSchema,
@@ -210,6 +252,38 @@ export const WorkerRpcContracts = {
   'backup.controlRun': {
     params: z.object({ runId: z.string().uuid(), action: RunControlActionSchema }).strict(),
     result: z.object({ accepted: z.literal(true) }).strict(),
+  },
+  'activity.operations': {
+    params: ActivityOperationsQuerySchema,
+    result: ActivityOperationsPageSchema,
+  },
+  'activity.operationDetails': {
+    params: ActivityOperationDetailsQuerySchema,
+    result: ActivityOperationDetailsSchema,
+  },
+  'activity.controlOperation': {
+    params: ActivityOperationControlSchema,
+    result: z.object({ accepted: z.literal(true) }).strict(),
+  },
+  'activity.runHistory': {
+    params: BackupRunHistoryQuerySchema,
+    result: BackupRunHistoryPageSchema,
+  },
+  'activity.runDetails': {
+    params: ActivityRunDetailsQuerySchema,
+    result: ActivityRunDetailsSchema,
+  },
+  'activity.log': {
+    params: ActivityLogQuerySchema,
+    result: ActivityLogPageSchema,
+  },
+  'activity.attention': {
+    params: ActivityAttentionQuerySchema,
+    result: ActivityAttentionPageSchema,
+  },
+  'activity.resolveEntity': {
+    params: z.object({ entityId: z.string().min(1).max(200) }).strict(),
+    result: ActivityEntityResolutionSchema,
   },
   'jobs.snapshot': {
     params: QueueQuerySchema,
@@ -435,9 +509,19 @@ export const DESKTOP_IPC_CHANNELS = {
   disableDestination: 'ytbm:destinations-disable',
   channelBackupSettings: 'ytbm:backup-channel-settings',
   updateChannelBackupSettings: 'ytbm:backup-update-channel-settings',
+  previewChannelQualityChange: 'ytbm:backup-preview-quality-change',
+  applyChannelQualityChange: 'ytbm:backup-apply-quality-change',
   startBackup: 'ytbm:backup-start',
   backupRuns: 'ytbm:backup-runs',
   controlBackupRun: 'ytbm:backup-control-run',
+  activityOperations: 'ytbm:activity-operations',
+  activityOperationDetails: 'ytbm:activity-operation-details',
+  controlActivityOperation: 'ytbm:activity-control-operation',
+  activityRunHistory: 'ytbm:activity-run-history',
+  activityRunDetails: 'ytbm:activity-run-details',
+  activityLog: 'ytbm:activity-log',
+  activityAttention: 'ytbm:activity-attention',
+  activityResolveEntity: 'ytbm:activity-resolve-entity',
   queueSnapshot: 'ytbm:queue-snapshot',
   controlJob: 'ytbm:jobs-control',
   mediaBackupDetails: 'ytbm:media-backup-details',
@@ -583,6 +667,14 @@ const DesktopIpcContracts = {
     input: ChannelBackupSettingsPatchSchema,
     output: ChannelBackupSettingsDtoSchema,
   },
+  [DESKTOP_IPC_CHANNELS.previewChannelQualityChange]: {
+    input: ChannelQualityChangeRequestSchema,
+    output: ChannelQualityChangePreviewSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.applyChannelQualityChange]: {
+    input: ChannelQualityChangeApplySchema,
+    output: ChannelQualityChangeResultSchema,
+  },
   [DESKTOP_IPC_CHANNELS.startBackup]: {
     input: z.object({ channelId: z.string().uuid() }).strict(),
     output: BackupStartResultSchema,
@@ -594,6 +686,38 @@ const DesktopIpcContracts = {
   [DESKTOP_IPC_CHANNELS.controlBackupRun]: {
     input: z.object({ runId: z.string().uuid(), action: RunControlActionSchema }).strict(),
     output: z.object({ accepted: z.literal(true) }).strict(),
+  },
+  [DESKTOP_IPC_CHANNELS.activityOperations]: {
+    input: ActivityOperationsQuerySchema,
+    output: ActivityOperationsPageSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.activityOperationDetails]: {
+    input: ActivityOperationDetailsQuerySchema,
+    output: ActivityOperationDetailsSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.controlActivityOperation]: {
+    input: ActivityOperationControlSchema,
+    output: z.object({ accepted: z.literal(true) }).strict(),
+  },
+  [DESKTOP_IPC_CHANNELS.activityRunHistory]: {
+    input: BackupRunHistoryQuerySchema,
+    output: BackupRunHistoryPageSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.activityRunDetails]: {
+    input: ActivityRunDetailsQuerySchema,
+    output: ActivityRunDetailsSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.activityLog]: {
+    input: ActivityLogQuerySchema,
+    output: ActivityLogPageSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.activityAttention]: {
+    input: ActivityAttentionQuerySchema,
+    output: ActivityAttentionPageSchema,
+  },
+  [DESKTOP_IPC_CHANNELS.activityResolveEntity]: {
+    input: z.object({ entityId: z.string().min(1).max(200) }).strict(),
+    output: ActivityEntityResolutionSchema,
   },
   [DESKTOP_IPC_CHANNELS.queueSnapshot]: {
     input: QueueQuerySchema,

@@ -85,6 +85,38 @@ export const ChannelBackupSettingsPatchSchema = z
   })
   .strict();
 
+export const ChannelQualityChangePreviewSchema = z
+  .object({
+    channelId: z.string().uuid(),
+    previousEffectiveQualityProfile: QualityProfileSchema,
+    targetEffectiveQualityProfile: QualityProfileSchema,
+    isQualityIncrease: z.boolean(),
+    eligibleMediaCount: z.number().int().nonnegative(),
+    eligibleCopyCount: z.number().int().nonnegative(),
+    upgradeExistingSupported: z.literal(false),
+    unsupportedReason: z.string().min(1).max(300),
+  })
+  .strict();
+
+export const ChannelQualityChangeRequestSchema = z
+  .object({
+    channelId: z.string().uuid(),
+    qualityProfileOverride: QualityProfileSchema.nullable(),
+  })
+  .strict();
+
+export const ChannelQualityChangeApplySchema = ChannelQualityChangeRequestSchema.extend({
+  policy: z.literal('NEW_MEDIA_ONLY'),
+}).strict();
+
+export const ChannelQualityChangeResultSchema = z
+  .object({
+    settings: ChannelBackupSettingsDtoSchema,
+    preview: ChannelQualityChangePreviewSchema,
+    appliedPolicy: z.literal('NEW_MEDIA_ONLY'),
+  })
+  .strict();
+
 export const BackupRunDtoSchema = z
   .object({
     id: z.string().uuid(),
@@ -238,13 +270,28 @@ export const MediaCopyDtoSchema = z
   })
   .strict();
 
+export const MediaDetailsPlaylistDtoSchema = z
+  .object({
+    id: z.string().uuid(),
+    title: z.string().min(1),
+    sourceStatus: SourceStatusSchema,
+  })
+  .strict();
+
 export const MediaBackupDetailsSchema = z
   .object({
     mediaItemId: z.string().uuid(),
     providerMediaId: z.string(),
+    channelId: z.string().uuid(),
+    channelTitle: z.string().min(1),
     title: z.string(),
     mediaType: MediaTypeSchema,
     sourceStatus: SourceStatusSchema,
+    sourceUrl: z.string().url(),
+    thumbnailUrl: z.string().url().nullable(),
+    publishedAt: NullableEpochMillisecondsSchema,
+    durationSeconds: z.number().int().nonnegative().nullable(),
+    playlists: z.array(MediaDetailsPlaylistDtoSchema),
     copies: z.array(MediaCopyDtoSchema),
   })
   .strict();
@@ -324,6 +371,10 @@ export type FilesystemDestinationDto = z.infer<typeof FilesystemDestinationDtoSc
 export type GoogleDriveDestinationDto = z.infer<typeof GoogleDriveDestinationDtoSchema>;
 export type ChannelBackupSettingsDto = z.infer<typeof ChannelBackupSettingsDtoSchema>;
 export type ChannelBackupSettingsPatch = z.infer<typeof ChannelBackupSettingsPatchSchema>;
+export type ChannelQualityChangePreview = z.infer<typeof ChannelQualityChangePreviewSchema>;
+export type ChannelQualityChangeRequest = z.infer<typeof ChannelQualityChangeRequestSchema>;
+export type ChannelQualityChangeApply = z.infer<typeof ChannelQualityChangeApplySchema>;
+export type ChannelQualityChangeResult = z.infer<typeof ChannelQualityChangeResultSchema>;
 export type BackupRunDto = z.infer<typeof BackupRunDtoSchema>;
 export type BackupStartResult = z.infer<typeof BackupStartResultSchema>;
 export type QueueJobDto = z.infer<typeof QueueJobDtoSchema>;
@@ -334,6 +385,7 @@ export type QueueSnapshot = z.infer<typeof QueueSnapshotSchema>;
 export type JobControlAction = z.infer<typeof JobControlActionSchema>;
 export type RunControlAction = z.infer<typeof RunControlActionSchema>;
 export type MediaCopyDto = z.infer<typeof MediaCopyDtoSchema>;
+export type MediaDetailsPlaylistDto = z.infer<typeof MediaDetailsPlaylistDtoSchema>;
 export type MediaBackupDetails = z.infer<typeof MediaBackupDetailsSchema>;
 export type OpenVerifiedCopyFolderResult = z.infer<typeof OpenVerifiedCopyFolderResultSchema>;
 export type ResolveVerifiedCopyFolderResult = z.infer<typeof ResolveVerifiedCopyFolderResultSchema>;

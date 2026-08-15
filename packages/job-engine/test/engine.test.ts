@@ -243,4 +243,16 @@ describe('DurableJobEngine execution', () => {
     await eventually(() => expect(repository.job.status).toBe('COMPLETED'));
     expect(second.isIdle()).toBe(true);
   });
+
+  it('drains active work without claiming queued jobs during a graceful worker replacement', () => {
+    const repository = new MemoryJobRepository();
+    const engine = createEngine(repository, async () => ({ downloaded: true })).engine;
+
+    expect(engine.isIdle()).toBe(false);
+    engine.prepareShutdownWhenIdle();
+    engine.wake();
+
+    expect(repository.job.status).toBe('READY');
+    expect(engine.isIdle()).toBe(true);
+  });
 });

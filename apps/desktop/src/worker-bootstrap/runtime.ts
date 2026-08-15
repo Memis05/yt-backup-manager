@@ -19,7 +19,12 @@ import {
   openWorkerDatabase,
   type WorkerDatabase,
 } from '@ytbm/database/worker';
-import { WorkerRpcServer, createUserScopedEndpoints, type WorkerRpcHandlers } from '@ytbm/ipc';
+import {
+  WORKER_RPC_PROTOCOL_VERSION,
+  WorkerRpcServer,
+  createUserScopedEndpoints,
+  type WorkerRpcHandlers,
+} from '@ytbm/ipc';
 import { NamedPipeWorkerSingleton, WorkerAlreadyRunningError } from '@ytbm/job-engine';
 import { RecoveryService } from '@ytbm/recovery';
 import {
@@ -201,6 +206,7 @@ export class WorkerRuntime {
       ).loadOrCreate();
       const handlers: WorkerRpcHandlers = {
         'worker.health': () => this.workerHealth(),
+        'worker.protocol': () => ({ version: WORKER_RPC_PROTOCOL_VERSION }),
         'worker.scheduledWake': ({ scheduleId, requestedAt }) => {
           this.logger.info('Scheduled worker wake received', { scheduleId, requestedAt });
           return this.scheduling!.trigger(scheduleId, Date.parse(requestedAt));
@@ -286,12 +292,30 @@ export class WorkerRuntime {
         'backup.channelSettings': ({ channelId }) =>
           this.localBackup!.getChannelSettings(channelId),
         'backup.updateChannelSettings': (input) => this.localBackup!.setChannelSettings(input),
+        'backup.previewQualityChange': (input) =>
+          this.localBackup!.previewChannelQualityChange(
+            input.channelId,
+            input.qualityProfileOverride,
+          ),
+        'backup.applyQualityChange': (input) => this.localBackup!.applyChannelQualityChange(input),
         'backup.start': ({ channelId }) => this.localBackup!.startBackup(channelId),
         'backup.runs': async () => ({ runs: this.localBackup!.listRuns() }),
         'backup.controlRun': ({ runId, action }) => {
           this.localBackup!.controlRun(runId, action);
           return { accepted: true };
         },
+        'activity.operations': (query) => this.localBackup!.activityOperations(query),
+        'activity.operationDetails': (query) => this.localBackup!.activityOperationDetails(query),
+        'activity.controlOperation': ({ operationId, action }) => {
+          this.localBackup!.controlActivityOperation(operationId, action);
+          return { accepted: true } as const;
+        },
+        'activity.runHistory': (query) => this.localBackup!.backupRunHistory(query),
+        'activity.runDetails': (query) => this.localBackup!.activityRunDetails(query),
+        'activity.log': (query) => this.localBackup!.activityLog(query),
+        'activity.attention': (query) => this.localBackup!.activityAttention(query),
+        'activity.resolveEntity': ({ entityId }) =>
+          this.localBackup!.resolveActivityEntity(entityId),
         'jobs.snapshot': (query) => this.localBackup!.queueSnapshot(query),
         'jobs.control': ({ jobId, action }) => this.localBackup!.controlJob(jobId, action),
         'media.backupDetails': ({ mediaItemId }) =>

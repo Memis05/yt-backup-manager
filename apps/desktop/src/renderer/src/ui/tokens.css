@@ -1,0 +1,170 @@
+:root {
+  color-scheme: dark;
+
+  /* Color: neutral surfaces */
+  --color-canvas: #0b0b0d;
+  --color-chrome: #101012;
+  --color-surface-1: #141416;
+  --color-surface-2: #1a1a1e;
+  --color-surface-raised: #202025;
+  --color-surface-hover: #242429;
+  --color-surface-pressed: #2a2a30;
+  --color-border-subtle: #2a2a2f;
+  --color-border-strong: #3a3a41;
+  --color-overlay-scrim: rgb(0 0 0 / 68%);
+
+  /* Color: text and icons */
+  --color-text-primary: #f4f4f5;
+  --color-text-secondary: #b3b3ba;
+  --color-text-muted: #92929b;
+  --color-text-disabled: #68686f;
+  --color-icon-primary: #d7d7db;
+  --color-icon-muted: #8b8b93;
+
+  /* Color: product and interaction */
+  --color-brand-action: #d93842;
+  --color-brand-action-hover: #c92f37;
+  --color-brand-action-pressed: #b6222c;
+  --color-brand-accent: #ff5b63;
+  --color-focus: #ff6b72;
+
+  /* Color: semantic states */
+  --color-status-healthy: #76d6ad;
+  --color-status-healthy-bg: #10261f;
+  --color-status-healthy-border: #285443;
+  --color-status-warning: #f2c46d;
+  --color-status-warning-bg: #2a2112;
+  --color-status-warning-border: #5f4b25;
+  --color-status-danger: #ff7a83;
+  --color-status-danger-bg: #2b1518;
+  --color-status-danger-border: #653039;
+  --color-status-info: #8db7ff;
+  --color-status-info-bg: #131f31;
+  --color-status-info-border: #2b4a71;
+  --color-status-neutral: #b3b3ba;
+  --color-status-neutral-bg: #1a1a1e;
+  --color-status-neutral-border: #39393f;
+
+  /* Typography */
+  --font-sans: 'Geist Variable', 'Geist Sans', 'Segoe UI Variable Text', 'Segoe UI', sans-serif;
+  --font-mono: 'Geist Mono', 'Cascadia Mono', 'Segoe UI Mono', monospace;
+  --font-size-page-title: 28px;
+  --line-height-page-title: 34px;
+  --font-weight-page-title: 650;
+  --letter-spacing-page-title: -0.02em;
+  --font-size-dialog-title: 20px;
+  --line-height-dialog-title: 26px;
+  --font-weight-dialog-title: 600;
+  --letter-spacing-dialog-title: -0.01em;
+  --font-size-section-title: 18px;
+  --line-height-section-title: 24px;
+  --font-weight-section-title: 600;
+  --letter-spacing-section-title: -0.01em;
+  --font-size-row-title: 14px;
+  --line-height-row-title: 20px;
+  --font-weight-row-title: 600;
+  --letter-spacing-row-title: 0;
+  --font-size-body: 14px;
+  --line-height-body: 20px;
+  --font-weight-body: 400;
+  --font-weight-body-strong: 600;
+  --letter-spacing-body: 0;
+  --font-size-secondary: 13px;
+  --line-height-secondary: 18px;
+  --font-weight-secondary: 400;
+  --letter-spacing-secondary: 0;
+  --font-size-caption: 12px;
+  --line-height-caption: 16px;
+  --font-weight-caption: 500;
+  --letter-spacing-caption: 0.01em;
+  --font-size-micro: 11px;
+  --line-height-micro: 14px;
+  --font-weight-micro: 500;
+  --letter-spacing-micro: 0.02em;
+  --font-size-technical: 12px;
+  --line-height-technical: 18px;
+  --font-weight-technical: 400;
+  --letter-spacing-technical: 0;
+
+  /* Spacing */
+  --space-0: 0;
+  --space-0-5: 2px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* Shape and depth */
+  --radius-xs: 4px;
+  --radius-sm: 7px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+  --border-default: 1px solid var(--color-border-subtle);
+  --shadow-popover: 0 8px 24px rgb(0 0 0 / 36%);
+  --shadow-dialog: 0 20px 56px rgb(0 0 0 / 52%);
+  --shadow-focus: 0 0 0 2px var(--color-canvas), 0 0 0 4px var(--color-focus);
+
+  /* Motion */
+  --motion-fast: 80ms;
+  --motion-base: 140ms;
+  --motion-slow: 200ms;
+  --motion-easing-standard: cubic-bezier(0.2, 0, 0, 1);
+  --motion-easing-exit: cubic-bezier(0.4, 0, 1, 1);
+
+  /* System layers */
+  --layer-base: 0;
+  --layer-sticky: 10;
+  --layer-sidebar: 20;
+  --layer-titlebar: 30;
+  --layer-dropdown: 40;
+  --layer-toast: 50;
+  --layer-scrim: 60;
+  --layer-dialog: 70;
+  --layer-tooltip: 80;
+
+  /* Shell dimensions */
+  --titlebar-height: 40px;
+  --sidebar-width: 208px;
+  --sidebar-rail-width: 64px;
+  --control-height-compact: 32px;
+  --control-height-default: 36px;
+  --control-height-prominent: 40px;
+}
+
+@media (min-width: 1920px) {
+  :root {
+    --sidebar-width: 224px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 0ms;
+    --motion-base: 0ms;
+    --motion-slow: 0ms;
+  }
+
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+@media (forced-colors: active) {
+  :root {
+    --color-focus: Highlight;
+    --color-border-subtle: CanvasText;
+    --color-border-strong: CanvasText;
+  }
+}

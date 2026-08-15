@@ -305,6 +305,32 @@ describe('worker-owned source catalog', () => {
         pageSize: 40,
       }),
     ).resolves.toMatchObject({ total: 3 });
+    await expect(
+      catalog.queryLibrary({
+        search: 'Short item',
+        channelId: null,
+        mediaType: null,
+        sourceStatus: null,
+        page: 1,
+        pageSize: 40,
+      }),
+    ).resolves.toMatchObject({
+      total: 1,
+      items: [
+        {
+          providerMediaId: 'short-1',
+          sourceStatus: 'REMOVED',
+          copySummary: {
+            copyCount: 1,
+            verifiedCount: 1,
+            pendingCount: 0,
+            attentionCount: 0,
+            unavailableCount: 0,
+            authRequiredCount: 0,
+          },
+        },
+      ],
+    });
   });
 
   it('does not reconcile unseen rows when a provider fails after a partial page', async () => {
